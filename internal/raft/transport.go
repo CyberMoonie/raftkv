@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/CyberMoonie/raftkv/internal/raft/raftpb"
@@ -43,8 +45,13 @@ func (t *GRPCTransport) client(addr string) (raftpb.RaftClient, error) {
 	if c, ok := t.clients[addr]; ok {
 		return c, nil
 	}
+	// gRPC's default reconnect backoff grows to two minutes. A restarted node
+	// must hear from the leader within an election timeout, so retry fast.
+	connectParams := grpc.ConnectParams{Backoff: backoff.DefaultConfig, MinConnectTimeout: time.Second}
+	connectParams.Backoff.MaxDelay = time.Second
 	conn, err := grpc.NewClient(addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithConnectParams(connectParams),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxMessageSize), grpc.MaxCallSendMsgSize(maxMessageSize)),
 	)
 	if err != nil {
