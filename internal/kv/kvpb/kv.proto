@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package kv;
+
+option go_package = "github.com/CyberMoonie/raftkv/internal/kv/kvpb";
+
+// Command is one client command, stored as the data of a Raft log entry.
+message Command {
+  repeated bytes args = 1;
+  // Leader clock (Unix milliseconds) when the command was proposed. Every
+  // replica evaluates expiry against this value instead of its own clock.
+  int64 now_ms = 2;
+}
