@@ -185,6 +185,7 @@ func (n *Node) advanceCommit() {
 			n.applyCond.Broadcast()
 			// Tell followers about the new commit index right away.
 			n.triggerReplication()
+			n.stepDownIfRemoved()
 			return
 		}
 	}
@@ -206,6 +207,7 @@ func (n *Node) HandleAppendEntries(req *raftpb.AppendEntriesRequest) *raftpb.App
 		resp.Term = n.term
 	}
 	n.leaderID = req.LeaderId
+	n.lastContact = time.Now()
 	n.resetElectionTimer()
 
 	prevIndex, prevTerm, entries := req.PrevLogIndex, req.PrevLogTerm, req.Entries
@@ -242,6 +244,8 @@ func (n *Node) HandleAppendEntries(req *raftpb.AppendEntriesRequest) *raftpb.App
 		}
 		n.log.append(entries[i:]...)
 		n.mustPersist(n.storage.appendEntries(entries[i:]))
+		// The new suffix may add or drop configuration entries.
+		n.refreshConfig()
 		break
 	}
 
@@ -269,6 +273,7 @@ func (n *Node) HandleInstallSnapshot(req *raftpb.InstallSnapshotRequest) *raftpb
 		resp.Term = n.term
 	}
 	n.leaderID = req.LeaderId
+	n.lastContact = time.Now()
 	n.resetElectionTimer()
 
 	snap := req.Snapshot
@@ -286,6 +291,7 @@ func (n *Node) HandleInstallSnapshot(req *raftpb.InstallSnapshotRequest) *raftpb
 	n.mustPersist(n.storage.saveSnapshot(snap))
 	n.mustPersist(n.storage.rewriteLog(n.log.slice(snap.LastIndex+1, n.log.lastIndex()+1)))
 	n.snapshot = snap
+	n.refreshConfig()
 	n.commitIndex = snap.LastIndex
 	n.pendingSnapshot = snap
 	n.applyCond.Broadcast()

@@ -2,6 +2,9 @@
 // Understandable Consensus Algorithm" (Ongaro and Ousterhout). Comments refer
 // to that paper by section and figure.
 //
+// Membership changes follow chapter 4 of Ongaro's dissertation, "Consensus:
+// Bridging Theory and Practice".
+//
 // A Node keeps one mutex for all its state. It never holds the mutex while
 // waiting on the network or on the state machine.
 package raft
@@ -14,6 +17,8 @@ import (
 	"math/rand/v2"
 	"sync"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 
 	"github.com/CyberMoonie/raftkv/internal/raft/raftpb"
 )
@@ -30,10 +35,13 @@ type StateMachine interface {
 
 type Config struct {
 	ID string
-	// DataDir holds the node's term, vote and log.
+	// DataDir holds the node's term, vote, log and snapshot.
 	DataDir string
-	// Members is the whole cluster, the same on every node.
-	Members      []*raftpb.Member
+	// Bootstrap starts a new cluster with these members if the node has no
+	// saved state yet. Either one node bootstraps alone and the others are
+	// added with AddMember, or every initial node bootstraps with the same
+	// list. Nodes that join an existing cluster leave it empty.
+	Bootstrap    []*raftpb.Member
 	Transport    Transport
 	StateMachine StateMachine
 
@@ -108,10 +116,16 @@ type Node struct {
 	leaderID         string
 	commitIndex      uint64
 	lastApplied      uint64
-	members          []*raftpb.Member
 	electionDeadline time.Time
+	lastContact      time.Time // last message from a current leader
+
+	// members is the latest configuration in the log; configIndex is its
+	// entry, or the snapshot's last index if it came from the snapshot.
+	members     []*raftpb.Member
+	configIndex uint64
 
 	// Leader state, reset after every election.
+	leaderStart uint64 // index of the no-op that opened this term
 	nextIndex   map[string]uint64
 	matchIndex  map[string]uint64
 	replicators map[string]*replicator
@@ -197,7 +211,6 @@ func New(cfg Config) (*Node, error) {
 		commitIndex: snap.LastIndex,
 		lastApplied: snap.LastIndex,
 		snapshot:    snap,
-		members:     cfg.Members,
 		nextIndex:   make(map[string]uint64),
 		matchIndex:  make(map[string]uint64),
 		replicators: make(map[string]*replicator),
@@ -207,7 +220,31 @@ func New(cfg Config) (*Node, error) {
 	}
 	n.applyCond = sync.NewCond(&n.mu)
 	n.log.append(entries...)
+
+	if len(cfg.Bootstrap) > 0 && n.log.lastIndex() == 0 && n.term == 0 {
+		if err := n.bootstrap(cfg.Bootstrap); err != nil {
+			st.close()
+			return nil, err
+		}
+	}
+	n.refreshConfig()
 	return n, nil
+}
+
+// bootstrap writes the first configuration as entry 1 of term 1. Nodes that
+// bootstrap with the same members write identical entries, so their logs
+// agree from the start.
+func (n *Node) bootstrap(members []*raftpb.Member) error {
+	data, err := proto.Marshal(&raftpb.Configuration{Members: members})
+	if err != nil {
+		return err
+	}
+	n.term = 1
+	n.persistHardState()
+	e := &raftpb.Entry{Index: 1, Term: 1, Type: raftpb.EntryType_ENTRY_TYPE_CONFIG, Data: data}
+	n.log.append(e)
+	n.mustPersist(n.storage.appendEntries([]*raftpb.Entry{e}))
+	return nil
 }
 
 // entriesAfter returns the saved entries that continue snap, and whether
@@ -263,16 +300,27 @@ func (n *Node) Stop() {
 // the leader accepts proposals; other nodes return a *NotLeaderError.
 func (n *Node) Propose(ctx context.Context, data []byte) (any, error) {
 	n.mu.Lock()
-	if n.stopped {
-		n.mu.Unlock()
-		return nil, ErrStopped
-	}
-	if n.role != Leader {
-		err := n.notLeaderError()
+	if err := n.checkLeader(); err != nil {
 		n.mu.Unlock()
 		return nil, err
 	}
-	e := n.appendEntry(raftpb.EntryType_ENTRY_TYPE_COMMAND, data)
+	return n.propose(ctx, raftpb.EntryType_ENTRY_TYPE_COMMAND, data)
+}
+
+func (n *Node) checkLeader() error {
+	if n.stopped {
+		return ErrStopped
+	}
+	if n.role != Leader {
+		return n.notLeaderError()
+	}
+	return nil
+}
+
+// propose appends an entry as leader, releases the lock and waits for the
+// entry to be applied. The caller holds the lock and has checked leadership.
+func (n *Node) propose(ctx context.Context, typ raftpb.EntryType, data []byte) (any, error) {
+	e := n.appendEntry(typ, data)
 	ch := make(chan result, 1)
 	n.waiters[e.Index] = waiter{term: e.Term, ch: ch}
 	n.advanceCommit()
@@ -345,7 +393,9 @@ func (n *Node) runTicker() {
 		case <-ticker.C:
 		}
 		n.mu.Lock()
-		if n.role != Leader && time.Now().After(n.electionDeadline) {
+		// Only members campaign: a node that was removed, or is waiting to
+		// be added, stays quiet.
+		if n.role != Leader && time.Now().After(n.electionDeadline) && n.member(n.id) != nil {
 			n.startElection()
 		}
 		n.mu.Unlock()
@@ -418,6 +468,13 @@ func (n *Node) HandleRequestVote(req *raftpb.RequestVoteRequest) *raftpb.Request
 	if req.Term < n.term || n.stopped {
 		return &raftpb.RequestVoteResponse{Term: n.term}
 	}
+	// A removed server stops hearing from the leader but is never told it
+	// was removed, so it keeps starting elections with ever higher terms.
+	// While we know a live leader, we ignore such requests without adopting
+	// their term, so they cannot depose it (dissertation §4.2.3).
+	if n.role == Leader || (n.leaderID != "" && time.Since(n.lastContact) < n.cfg.ElectionTimeout) {
+		return &raftpb.RequestVoteResponse{Term: n.term}
+	}
 	if req.Term > n.term {
 		n.becomeFollower(req.Term)
 	}
@@ -447,6 +504,7 @@ func (n *Node) becomeFollower(term uint64) {
 	}
 	if n.role == Leader {
 		n.stopReplicators()
+		n.leaderID = ""
 	}
 	if n.role != Follower {
 		n.logger.Info("became follower", "term", n.term)
@@ -461,16 +519,11 @@ func (n *Node) becomeLeader() {
 
 	n.nextIndex = make(map[string]uint64)
 	n.matchIndex = make(map[string]uint64)
-	for _, m := range n.members {
-		if m.Id != n.id {
-			n.nextIndex[m.Id] = n.log.lastIndex() + 1
-			n.startReplicator(m)
-		}
-	}
+	n.syncReplicators()
 	// A leader may only count replicas for entries of its own term (§5.4.2),
 	// so entries left over from earlier terms are committed only once it
 	// commits one of its own. A no-op entry gets that done right away (§8).
-	n.appendEntry(raftpb.EntryType_ENTRY_TYPE_NOOP, nil)
+	n.leaderStart = n.appendEntry(raftpb.EntryType_ENTRY_TYPE_NOOP, nil).Index
 	n.advanceCommit()
 	n.triggerReplication()
 }
@@ -480,6 +533,10 @@ func (n *Node) appendEntry(typ raftpb.EntryType, data []byte) *raftpb.Entry {
 	e := &raftpb.Entry{Index: n.log.lastIndex() + 1, Term: n.term, Type: typ, Data: data}
 	n.log.append(e)
 	n.mustPersist(n.storage.appendEntries([]*raftpb.Entry{e}))
+	if typ == raftpb.EntryType_ENTRY_TYPE_CONFIG {
+		n.refreshConfig()
+		n.syncReplicators()
+	}
 	return e
 }
 
@@ -578,7 +635,13 @@ func (n *Node) takeSnapshot() {
 		return // a snapshot from the leader got further meanwhile
 	}
 
-	snap := &raftpb.Snapshot{LastIndex: index, LastTerm: term, Data: data}
+	members, _ := n.configAt(index)
+	snap := &raftpb.Snapshot{
+		LastIndex: index,
+		LastTerm:  term,
+		Data:      data,
+		Config:    &raftpb.Configuration{Members: members},
+	}
 	n.mustPersist(n.storage.saveSnapshot(snap))
 	n.log.compact(index)
 	n.mustPersist(n.storage.rewriteLog(n.log.slice(index+1, n.log.lastIndex()+1)))

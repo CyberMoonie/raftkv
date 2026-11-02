@@ -21,6 +21,13 @@ message Member {
 enum EntryType {
   ENTRY_TYPE_COMMAND = 0; // data is a state machine command
   ENTRY_TYPE_NOOP = 1;    // appended by every new leader
+  ENTRY_TYPE_CONFIG = 2;  // data is a Configuration
+}
+
+// Configuration is the set of members. A node uses the latest one in its
+// log as soon as it is appended, committed or not (dissertation §4.1).
+message Configuration {
+  repeated Member members = 1;
 }
 
 message Entry {
@@ -75,6 +82,7 @@ message Snapshot {
   uint64 last_index = 1;
   uint64 last_term = 2;
   bytes data = 3;
+  Configuration config = 4; // the configuration as of last_index
 }
 
 // The whole snapshot travels in one message; Figure 13 of the paper splits

@@ -104,7 +104,8 @@ type cluster struct {
 	t       *testing.T
 	cfg     Config // template for every node's config
 	net     *network
-	members []*raftpb.Member
+	members []*raftpb.Member // every node ever started
+	initial int              // how many of them bootstrapped the cluster
 	dirs    []string
 	nodes   []*Node
 	fsms    []*testFSM
@@ -119,26 +120,43 @@ func newCluster(t *testing.T, size int) *cluster {
 func newClusterWith(t *testing.T, size int, cfg Config) *cluster {
 	t.Helper()
 	c := &cluster{
-		t:     t,
-		cfg:   cfg,
-		net:   &network{nodes: make(map[string]*Node), down: make(map[string]bool)},
-		nodes: make([]*Node, size),
-		fsms:  make([]*testFSM, size),
+		t:       t,
+		cfg:     cfg,
+		net:     &network{nodes: make(map[string]*Node), down: make(map[string]bool)},
+		initial: size,
 	}
-	for i := range size {
-		id := fmt.Sprintf("n%d", i+1)
-		c.members = append(c.members, &raftpb.Member{Id: id, RaftAddr: id, ClientAddr: id + ":6379"})
-		c.dirs = append(c.dirs, t.TempDir())
+	for range size {
+		c.newMember()
 	}
 	for i := range size {
 		c.start(i)
 	}
 	t.Cleanup(func() {
 		for _, n := range c.nodes {
-			n.Stop()
+			if n != nil {
+				n.Stop()
+			}
 		}
 	})
 	return c
+}
+
+func (c *cluster) newMember() int {
+	i := len(c.members)
+	id := fmt.Sprintf("n%d", i+1)
+	c.members = append(c.members, &raftpb.Member{Id: id, RaftAddr: id, ClientAddr: id + ":6379"})
+	c.dirs = append(c.dirs, c.t.TempDir())
+	c.nodes = append(c.nodes, nil)
+	c.fsms = append(c.fsms, nil)
+	return i
+}
+
+// addNode starts a node that is not part of the cluster yet and returns its
+// position. It joins once the leader adds it with AddMember.
+func (c *cluster) addNode() int {
+	i := c.newMember()
+	c.start(i)
+	return i
 }
 
 func (c *cluster) start(i int) {
@@ -148,7 +166,9 @@ func (c *cluster) start(i int) {
 	cfg := c.cfg
 	cfg.ID = m.Id
 	cfg.DataDir = c.dirs[i]
-	cfg.Members = c.members
+	if i < c.initial {
+		cfg.Bootstrap = c.members[:c.initial]
+	}
 	cfg.Transport = memTransport{net: c.net, from: m.RaftAddr}
 	cfg.StateMachine = fsm
 	cfg.HeartbeatInterval = 20 * time.Millisecond
@@ -195,7 +215,7 @@ func (c *cluster) leader() int {
 	eventually(c.t, 5*time.Second, "a single leader", func() bool {
 		leader = -1
 		for i, n := range c.nodes {
-			if c.isDown(i) || n.Status().Role != Leader {
+			if n == nil || c.isDown(i) || n.Status().Role != Leader {
 				continue
 			}
 			if leader != -1 {
@@ -229,8 +249,10 @@ func (c *cluster) propose(data string) {
 func (c *cluster) waitApplied(want []string, nodes ...int) {
 	c.t.Helper()
 	if nodes == nil {
-		for i := range c.nodes {
-			nodes = append(nodes, i)
+		for i, n := range c.nodes {
+			if n != nil {
+				nodes = append(nodes, i)
+			}
 		}
 	}
 	for _, i := range nodes {

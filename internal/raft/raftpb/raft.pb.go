@@ -26,6 +26,7 @@ type EntryType int32
 const (
 	EntryType_ENTRY_TYPE_COMMAND EntryType = 0 // data is a state machine command
 	EntryType_ENTRY_TYPE_NOOP    EntryType = 1 // appended by every new leader
+	EntryType_ENTRY_TYPE_CONFIG  EntryType = 2 // data is a Configuration
 )
 
 // Enum value maps for EntryType.
@@ -33,10 +34,12 @@ var (
 	EntryType_name = map[int32]string{
 		0: "ENTRY_TYPE_COMMAND",
 		1: "ENTRY_TYPE_NOOP",
+		2: "ENTRY_TYPE_CONFIG",
 	}
 	EntryType_value = map[string]int32{
 		"ENTRY_TYPE_COMMAND": 0,
 		"ENTRY_TYPE_NOOP":    1,
+		"ENTRY_TYPE_CONFIG":  2,
 	}
 )
 
@@ -128,6 +131,52 @@ func (x *Member) GetClientAddr() string {
 	return ""
 }
 
+// Configuration is the set of members. A node uses the latest one in its
+// log as soon as it is appended, committed or not (dissertation §4.1).
+type Configuration struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Members       []*Member              `protobuf:"bytes,1,rep,name=members,proto3" json:"members,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Configuration) Reset() {
+	*x = Configuration{}
+	mi := &file_raft_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Configuration) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Configuration) ProtoMessage() {}
+
+func (x *Configuration) ProtoReflect() protoreflect.Message {
+	mi := &file_raft_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Configuration.ProtoReflect.Descriptor instead.
+func (*Configuration) Descriptor() ([]byte, []int) {
+	return file_raft_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *Configuration) GetMembers() []*Member {
+	if x != nil {
+		return x.Members
+	}
+	return nil
+}
+
 type Entry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Index         uint64                 `protobuf:"varint,1,opt,name=index,proto3" json:"index,omitempty"`
@@ -140,7 +189,7 @@ type Entry struct {
 
 func (x *Entry) Reset() {
 	*x = Entry{}
-	mi := &file_raft_proto_msgTypes[1]
+	mi := &file_raft_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -152,7 +201,7 @@ func (x *Entry) String() string {
 func (*Entry) ProtoMessage() {}
 
 func (x *Entry) ProtoReflect() protoreflect.Message {
-	mi := &file_raft_proto_msgTypes[1]
+	mi := &file_raft_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -165,7 +214,7 @@ func (x *Entry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Entry.ProtoReflect.Descriptor instead.
 func (*Entry) Descriptor() ([]byte, []int) {
-	return file_raft_proto_rawDescGZIP(), []int{1}
+	return file_raft_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *Entry) GetIndex() uint64 {
@@ -208,7 +257,7 @@ type RequestVoteRequest struct {
 
 func (x *RequestVoteRequest) Reset() {
 	*x = RequestVoteRequest{}
-	mi := &file_raft_proto_msgTypes[2]
+	mi := &file_raft_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -220,7 +269,7 @@ func (x *RequestVoteRequest) String() string {
 func (*RequestVoteRequest) ProtoMessage() {}
 
 func (x *RequestVoteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_raft_proto_msgTypes[2]
+	mi := &file_raft_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -233,7 +282,7 @@ func (x *RequestVoteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequestVoteRequest.ProtoReflect.Descriptor instead.
 func (*RequestVoteRequest) Descriptor() ([]byte, []int) {
-	return file_raft_proto_rawDescGZIP(), []int{2}
+	return file_raft_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *RequestVoteRequest) GetTerm() uint64 {
@@ -274,7 +323,7 @@ type RequestVoteResponse struct {
 
 func (x *RequestVoteResponse) Reset() {
 	*x = RequestVoteResponse{}
-	mi := &file_raft_proto_msgTypes[3]
+	mi := &file_raft_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -286,7 +335,7 @@ func (x *RequestVoteResponse) String() string {
 func (*RequestVoteResponse) ProtoMessage() {}
 
 func (x *RequestVoteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_raft_proto_msgTypes[3]
+	mi := &file_raft_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -299,7 +348,7 @@ func (x *RequestVoteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequestVoteResponse.ProtoReflect.Descriptor instead.
 func (*RequestVoteResponse) Descriptor() ([]byte, []int) {
-	return file_raft_proto_rawDescGZIP(), []int{3}
+	return file_raft_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *RequestVoteResponse) GetTerm() uint64 {
@@ -330,7 +379,7 @@ type AppendEntriesRequest struct {
 
 func (x *AppendEntriesRequest) Reset() {
 	*x = AppendEntriesRequest{}
-	mi := &file_raft_proto_msgTypes[4]
+	mi := &file_raft_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -342,7 +391,7 @@ func (x *AppendEntriesRequest) String() string {
 func (*AppendEntriesRequest) ProtoMessage() {}
 
 func (x *AppendEntriesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_raft_proto_msgTypes[4]
+	mi := &file_raft_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -355,7 +404,7 @@ func (x *AppendEntriesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppendEntriesRequest.ProtoReflect.Descriptor instead.
 func (*AppendEntriesRequest) Descriptor() ([]byte, []int) {
-	return file_raft_proto_rawDescGZIP(), []int{4}
+	return file_raft_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *AppendEntriesRequest) GetTerm() uint64 {
@@ -415,7 +464,7 @@ type AppendEntriesResponse struct {
 
 func (x *AppendEntriesResponse) Reset() {
 	*x = AppendEntriesResponse{}
-	mi := &file_raft_proto_msgTypes[5]
+	mi := &file_raft_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -427,7 +476,7 @@ func (x *AppendEntriesResponse) String() string {
 func (*AppendEntriesResponse) ProtoMessage() {}
 
 func (x *AppendEntriesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_raft_proto_msgTypes[5]
+	mi := &file_raft_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -440,7 +489,7 @@ func (x *AppendEntriesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppendEntriesResponse.ProtoReflect.Descriptor instead.
 func (*AppendEntriesResponse) Descriptor() ([]byte, []int) {
-	return file_raft_proto_rawDescGZIP(), []int{5}
+	return file_raft_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *AppendEntriesResponse) GetTerm() uint64 {
@@ -484,7 +533,7 @@ type HardState struct {
 
 func (x *HardState) Reset() {
 	*x = HardState{}
-	mi := &file_raft_proto_msgTypes[6]
+	mi := &file_raft_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -496,7 +545,7 @@ func (x *HardState) String() string {
 func (*HardState) ProtoMessage() {}
 
 func (x *HardState) ProtoReflect() protoreflect.Message {
-	mi := &file_raft_proto_msgTypes[6]
+	mi := &file_raft_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -509,7 +558,7 @@ func (x *HardState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HardState.ProtoReflect.Descriptor instead.
 func (*HardState) Descriptor() ([]byte, []int) {
-	return file_raft_proto_rawDescGZIP(), []int{6}
+	return file_raft_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *HardState) GetTerm() uint64 {
@@ -533,13 +582,14 @@ type Snapshot struct {
 	LastIndex     uint64                 `protobuf:"varint,1,opt,name=last_index,json=lastIndex,proto3" json:"last_index,omitempty"`
 	LastTerm      uint64                 `protobuf:"varint,2,opt,name=last_term,json=lastTerm,proto3" json:"last_term,omitempty"`
 	Data          []byte                 `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
+	Config        *Configuration         `protobuf:"bytes,4,opt,name=config,proto3" json:"config,omitempty"` // the configuration as of last_index
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Snapshot) Reset() {
 	*x = Snapshot{}
-	mi := &file_raft_proto_msgTypes[7]
+	mi := &file_raft_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -551,7 +601,7 @@ func (x *Snapshot) String() string {
 func (*Snapshot) ProtoMessage() {}
 
 func (x *Snapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_raft_proto_msgTypes[7]
+	mi := &file_raft_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -564,7 +614,7 @@ func (x *Snapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Snapshot.ProtoReflect.Descriptor instead.
 func (*Snapshot) Descriptor() ([]byte, []int) {
-	return file_raft_proto_rawDescGZIP(), []int{7}
+	return file_raft_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *Snapshot) GetLastIndex() uint64 {
@@ -588,6 +638,13 @@ func (x *Snapshot) GetData() []byte {
 	return nil
 }
 
+func (x *Snapshot) GetConfig() *Configuration {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
 // The whole snapshot travels in one message; Figure 13 of the paper splits
 // it into chunks, which only matters for snapshots far larger than ours.
 type InstallSnapshotRequest struct {
@@ -601,7 +658,7 @@ type InstallSnapshotRequest struct {
 
 func (x *InstallSnapshotRequest) Reset() {
 	*x = InstallSnapshotRequest{}
-	mi := &file_raft_proto_msgTypes[8]
+	mi := &file_raft_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -613,7 +670,7 @@ func (x *InstallSnapshotRequest) String() string {
 func (*InstallSnapshotRequest) ProtoMessage() {}
 
 func (x *InstallSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_raft_proto_msgTypes[8]
+	mi := &file_raft_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -626,7 +683,7 @@ func (x *InstallSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InstallSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*InstallSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_raft_proto_rawDescGZIP(), []int{8}
+	return file_raft_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *InstallSnapshotRequest) GetTerm() uint64 {
@@ -659,7 +716,7 @@ type InstallSnapshotResponse struct {
 
 func (x *InstallSnapshotResponse) Reset() {
 	*x = InstallSnapshotResponse{}
-	mi := &file_raft_proto_msgTypes[9]
+	mi := &file_raft_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -671,7 +728,7 @@ func (x *InstallSnapshotResponse) String() string {
 func (*InstallSnapshotResponse) ProtoMessage() {}
 
 func (x *InstallSnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_raft_proto_msgTypes[9]
+	mi := &file_raft_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -684,7 +741,7 @@ func (x *InstallSnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InstallSnapshotResponse.ProtoReflect.Descriptor instead.
 func (*InstallSnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_raft_proto_rawDescGZIP(), []int{9}
+	return file_raft_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *InstallSnapshotResponse) GetTerm() uint64 {
@@ -704,7 +761,9 @@ const file_raft_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\traft_addr\x18\x02 \x01(\tR\braftAddr\x12\x1f\n" +
 	"\vclient_addr\x18\x03 \x01(\tR\n" +
-	"clientAddr\"j\n" +
+	"clientAddr\"7\n" +
+	"\rConfiguration\x12&\n" +
+	"\amembers\x18\x01 \x03(\v2\f.raft.MemberR\amembers\"j\n" +
 	"\x05Entry\x12\x14\n" +
 	"\x05index\x18\x01 \x01(\x04R\x05index\x12\x12\n" +
 	"\x04term\x18\x02 \x01(\x04R\x04term\x12#\n" +
@@ -732,21 +791,23 @@ const file_raft_proto_rawDesc = "" +
 	"\rconflict_term\x18\x04 \x01(\x04R\fconflictTerm\"<\n" +
 	"\tHardState\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x04R\x04term\x12\x1b\n" +
-	"\tvoted_for\x18\x02 \x01(\tR\bvotedFor\"Z\n" +
+	"\tvoted_for\x18\x02 \x01(\tR\bvotedFor\"\x87\x01\n" +
 	"\bSnapshot\x12\x1d\n" +
 	"\n" +
 	"last_index\x18\x01 \x01(\x04R\tlastIndex\x12\x1b\n" +
 	"\tlast_term\x18\x02 \x01(\x04R\blastTerm\x12\x12\n" +
-	"\x04data\x18\x03 \x01(\fR\x04data\"u\n" +
+	"\x04data\x18\x03 \x01(\fR\x04data\x12+\n" +
+	"\x06config\x18\x04 \x01(\v2\x13.raft.ConfigurationR\x06config\"u\n" +
 	"\x16InstallSnapshotRequest\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x04R\x04term\x12\x1b\n" +
 	"\tleader_id\x18\x02 \x01(\tR\bleaderId\x12*\n" +
 	"\bsnapshot\x18\x03 \x01(\v2\x0e.raft.SnapshotR\bsnapshot\"-\n" +
 	"\x17InstallSnapshotResponse\x12\x12\n" +
-	"\x04term\x18\x01 \x01(\x04R\x04term*8\n" +
+	"\x04term\x18\x01 \x01(\x04R\x04term*O\n" +
 	"\tEntryType\x12\x16\n" +
 	"\x12ENTRY_TYPE_COMMAND\x10\x00\x12\x13\n" +
-	"\x0fENTRY_TYPE_NOOP\x10\x012\xe4\x01\n" +
+	"\x0fENTRY_TYPE_NOOP\x10\x01\x12\x15\n" +
+	"\x11ENTRY_TYPE_CONFIG\x10\x022\xe4\x01\n" +
 	"\x04Raft\x12B\n" +
 	"\vRequestVote\x12\x18.raft.RequestVoteRequest\x1a\x19.raft.RequestVoteResponse\x12H\n" +
 	"\rAppendEntries\x12\x1a.raft.AppendEntriesRequest\x1a\x1b.raft.AppendEntriesResponse\x12N\n" +
@@ -765,35 +826,38 @@ func file_raft_proto_rawDescGZIP() []byte {
 }
 
 var file_raft_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_raft_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_raft_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_raft_proto_goTypes = []any{
 	(EntryType)(0),                  // 0: raft.EntryType
 	(*Member)(nil),                  // 1: raft.Member
-	(*Entry)(nil),                   // 2: raft.Entry
-	(*RequestVoteRequest)(nil),      // 3: raft.RequestVoteRequest
-	(*RequestVoteResponse)(nil),     // 4: raft.RequestVoteResponse
-	(*AppendEntriesRequest)(nil),    // 5: raft.AppendEntriesRequest
-	(*AppendEntriesResponse)(nil),   // 6: raft.AppendEntriesResponse
-	(*HardState)(nil),               // 7: raft.HardState
-	(*Snapshot)(nil),                // 8: raft.Snapshot
-	(*InstallSnapshotRequest)(nil),  // 9: raft.InstallSnapshotRequest
-	(*InstallSnapshotResponse)(nil), // 10: raft.InstallSnapshotResponse
+	(*Configuration)(nil),           // 2: raft.Configuration
+	(*Entry)(nil),                   // 3: raft.Entry
+	(*RequestVoteRequest)(nil),      // 4: raft.RequestVoteRequest
+	(*RequestVoteResponse)(nil),     // 5: raft.RequestVoteResponse
+	(*AppendEntriesRequest)(nil),    // 6: raft.AppendEntriesRequest
+	(*AppendEntriesResponse)(nil),   // 7: raft.AppendEntriesResponse
+	(*HardState)(nil),               // 8: raft.HardState
+	(*Snapshot)(nil),                // 9: raft.Snapshot
+	(*InstallSnapshotRequest)(nil),  // 10: raft.InstallSnapshotRequest
+	(*InstallSnapshotResponse)(nil), // 11: raft.InstallSnapshotResponse
 }
 var file_raft_proto_depIdxs = []int32{
-	0,  // 0: raft.Entry.type:type_name -> raft.EntryType
-	2,  // 1: raft.AppendEntriesRequest.entries:type_name -> raft.Entry
-	8,  // 2: raft.InstallSnapshotRequest.snapshot:type_name -> raft.Snapshot
-	3,  // 3: raft.Raft.RequestVote:input_type -> raft.RequestVoteRequest
-	5,  // 4: raft.Raft.AppendEntries:input_type -> raft.AppendEntriesRequest
-	9,  // 5: raft.Raft.InstallSnapshot:input_type -> raft.InstallSnapshotRequest
-	4,  // 6: raft.Raft.RequestVote:output_type -> raft.RequestVoteResponse
-	6,  // 7: raft.Raft.AppendEntries:output_type -> raft.AppendEntriesResponse
-	10, // 8: raft.Raft.InstallSnapshot:output_type -> raft.InstallSnapshotResponse
-	6,  // [6:9] is the sub-list for method output_type
-	3,  // [3:6] is the sub-list for method input_type
-	3,  // [3:3] is the sub-list for extension type_name
-	3,  // [3:3] is the sub-list for extension extendee
-	0,  // [0:3] is the sub-list for field type_name
+	1,  // 0: raft.Configuration.members:type_name -> raft.Member
+	0,  // 1: raft.Entry.type:type_name -> raft.EntryType
+	3,  // 2: raft.AppendEntriesRequest.entries:type_name -> raft.Entry
+	2,  // 3: raft.Snapshot.config:type_name -> raft.Configuration
+	9,  // 4: raft.InstallSnapshotRequest.snapshot:type_name -> raft.Snapshot
+	4,  // 5: raft.Raft.RequestVote:input_type -> raft.RequestVoteRequest
+	6,  // 6: raft.Raft.AppendEntries:input_type -> raft.AppendEntriesRequest
+	10, // 7: raft.Raft.InstallSnapshot:input_type -> raft.InstallSnapshotRequest
+	5,  // 8: raft.Raft.RequestVote:output_type -> raft.RequestVoteResponse
+	7,  // 9: raft.Raft.AppendEntries:output_type -> raft.AppendEntriesResponse
+	11, // 10: raft.Raft.InstallSnapshot:output_type -> raft.InstallSnapshotResponse
+	8,  // [8:11] is the sub-list for method output_type
+	5,  // [5:8] is the sub-list for method input_type
+	5,  // [5:5] is the sub-list for extension type_name
+	5,  // [5:5] is the sub-list for extension extendee
+	0,  // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_raft_proto_init() }
@@ -807,7 +871,7 @@ func file_raft_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_raft_proto_rawDesc), len(file_raft_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   10,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
