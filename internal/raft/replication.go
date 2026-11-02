@@ -189,17 +189,19 @@ func (n *Node) HandleAppendEntries(req *raftpb.AppendEntriesRequest) *raftpb.App
 
 	// Append what is new. An existing entry is only removed when it
 	// conflicts, never just because the request ends earlier: an old,
-	// delayed request must not undo entries a newer one appended.
+	// delayed request must not undo entries a newer one appended. Everything
+	// is on disk before we reply.
 	for i, e := range req.Entries {
-		if e.Index > n.log.lastIndex() {
-			n.log.append(req.Entries[i:]...)
-			break
-		}
-		if term, _ := n.log.term(e.Index); term != e.Term {
+		if e.Index <= n.log.lastIndex() {
+			if term, _ := n.log.term(e.Index); term == e.Term {
+				continue
+			}
 			n.log.truncateFrom(e.Index)
-			n.log.append(req.Entries[i:]...)
-			break
+			n.mustPersist(n.storage.truncateFrom(e.Index))
 		}
+		n.log.append(req.Entries[i:]...)
+		n.mustPersist(n.storage.appendEntries(req.Entries[i:]))
+		break
 	}
 
 	lastNew := req.PrevLogIndex + uint64(len(req.Entries))

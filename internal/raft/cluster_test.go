@@ -87,6 +87,7 @@ type cluster struct {
 	t       *testing.T
 	net     *network
 	members []*raftpb.Member
+	dirs    []string
 	nodes   []*Node
 	fsms    []*testFSM
 }
@@ -102,6 +103,7 @@ func newCluster(t *testing.T, size int) *cluster {
 	for i := range size {
 		id := fmt.Sprintf("n%d", i+1)
 		c.members = append(c.members, &raftpb.Member{Id: id, RaftAddr: id, ClientAddr: id + ":6379"})
+		c.dirs = append(c.dirs, t.TempDir())
 	}
 	for i := range size {
 		c.start(i)
@@ -120,6 +122,7 @@ func (c *cluster) start(i int) {
 	fsm := &testFSM{}
 	n, err := New(Config{
 		ID:                m.Id,
+		DataDir:           c.dirs[i],
 		Members:           c.members,
 		Transport:         memTransport{net: c.net, from: m.RaftAddr},
 		StateMachine:      fsm,
@@ -135,6 +138,13 @@ func (c *cluster) start(i int) {
 	c.net.mu.Unlock()
 	c.nodes[i], c.fsms[i] = n, fsm
 	n.Start()
+}
+
+// restart stops node i and starts it again from its data directory with an
+// empty state machine, like a process that crashed and came back.
+func (c *cluster) restart(i int) {
+	c.nodes[i].Stop()
+	c.start(i)
 }
 
 func (c *cluster) setDown(i int, down bool) {

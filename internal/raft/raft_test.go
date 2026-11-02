@@ -134,3 +134,36 @@ func TestUncommittedEntriesAreOverwritten(t *testing.T) {
 	c.connect(old)
 	c.waitApplied(want)
 }
+
+func TestRestartedClusterReappliesCommittedLog(t *testing.T) {
+	c := newCluster(t, 3)
+	want := commands("cmd", 10)
+	for _, cmd := range want {
+		c.propose(cmd)
+	}
+	c.waitApplied(want)
+
+	for i := range c.nodes {
+		c.restart(i)
+	}
+	// The new state machines are empty; they are rebuilt from the logs on
+	// disk once a new leader commits an entry of its term.
+	c.waitApplied(want)
+	c.propose("after")
+	c.waitApplied(append(want, "after"))
+}
+
+func TestRestartedNodeRemembersTermAndVote(t *testing.T) {
+	c := newCluster(t, 3)
+	leader := c.leader()
+	before := c.nodes[leader].Status()
+
+	c.restart(leader)
+	after := c.nodes[leader].Status()
+	if after.Term < before.Term {
+		t.Fatalf("term went back from %d to %d", before.Term, after.Term)
+	}
+	if after.LastIndex < before.LastIndex {
+		t.Fatalf("log shrank from %d to %d entries", before.LastIndex, after.LastIndex)
+	}
+}

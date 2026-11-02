@@ -26,6 +26,8 @@ type StateMachine interface {
 
 type Config struct {
 	ID string
+	// DataDir holds the node's term, vote and log.
+	DataDir string
 	// Members is the whole cluster, the same on every node.
 	Members      []*raftpb.Member
 	Transport    Transport
@@ -81,9 +83,10 @@ func (e *NotLeaderError) Error() string {
 }
 
 type Node struct {
-	cfg    Config
-	id     string
-	logger *slog.Logger
+	cfg     Config
+	id      string
+	logger  *slog.Logger
+	storage *storage
 
 	mu        sync.Mutex
 	applyCond *sync.Cond // signalled when commitIndex moves or the node stops
@@ -129,6 +132,8 @@ func New(cfg Config) (*Node, error) {
 	switch {
 	case cfg.ID == "":
 		return nil, errors.New("raft: Config.ID is required")
+	case cfg.DataDir == "":
+		return nil, errors.New("raft: Config.DataDir is required")
 	case cfg.Transport == nil:
 		return nil, errors.New("raft: Config.Transport is required")
 	case cfg.StateMachine == nil:
@@ -144,11 +149,23 @@ func New(cfg Config) (*Node, error) {
 		cfg.Logger = slog.Default()
 	}
 
+	st, hs, entries, err := openStorage(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) > 0 && entries[0].Index != 1 {
+		st.close()
+		return nil, fmt.Errorf("raft: log starts at index %d, want 1", entries[0].Index)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	n := &Node{
 		cfg:         cfg,
 		id:          cfg.ID,
 		logger:      cfg.Logger.With("node", cfg.ID),
+		storage:     st,
+		term:        hs.Term,
+		votedFor:    hs.VotedFor,
 		log:         newLog(0, 0),
 		members:     cfg.Members,
 		nextIndex:   make(map[string]uint64),
@@ -159,6 +176,7 @@ func New(cfg Config) (*Node, error) {
 		cancel:      cancel,
 	}
 	n.applyCond = sync.NewCond(&n.mu)
+	n.log.append(entries...)
 	return n, nil
 }
 
@@ -186,6 +204,9 @@ func (n *Node) Stop() {
 	n.applyCond.Broadcast()
 	n.mu.Unlock()
 	n.wg.Wait()
+	if err := n.storage.close(); err != nil {
+		n.logger.Error("closing storage", "err", err)
+	}
 }
 
 // Propose appends data to the log and waits until it is committed and
@@ -282,6 +303,7 @@ func (n *Node) startElection() {
 	n.term++
 	n.votedFor = n.id
 	n.leaderID = ""
+	n.persistHardState()
 	n.resetElectionTimer()
 	n.logger.Info("starting election", "term", n.term)
 
@@ -346,6 +368,7 @@ func (n *Node) HandleRequestVote(req *raftpb.RequestVoteRequest) *raftpb.Request
 		(req.LastLogTerm == n.log.lastTerm() && req.LastLogIndex >= n.log.lastIndex())
 	if (n.votedFor == "" || n.votedFor == req.CandidateId) && upToDate {
 		n.votedFor = req.CandidateId
+		n.persistHardState()
 		n.resetElectionTimer()
 		return &raftpb.RequestVoteResponse{Term: n.term, VoteGranted: true}
 	}
@@ -359,6 +382,7 @@ func (n *Node) becomeFollower(term uint64) {
 		n.term = term
 		n.votedFor = ""
 		n.leaderID = ""
+		n.persistHardState()
 	}
 	if n.role == Leader {
 		n.stopReplicators()
@@ -394,7 +418,21 @@ func (n *Node) becomeLeader() {
 func (n *Node) appendEntry(typ raftpb.EntryType, data []byte) *raftpb.Entry {
 	e := &raftpb.Entry{Index: n.log.lastIndex() + 1, Term: n.term, Type: typ, Data: data}
 	n.log.append(e)
+	n.mustPersist(n.storage.appendEntries([]*raftpb.Entry{e}))
 	return e
+}
+
+func (n *Node) persistHardState() {
+	n.mustPersist(n.storage.saveHardState(&raftpb.HardState{Term: n.term, VotedFor: n.votedFor}))
+}
+
+// mustPersist crashes the node when the disk fails. Raft's guarantees rest
+// on what was saved, so carrying on without it could lose committed data or
+// elect two leaders; stopping is the safe failure.
+func (n *Node) mustPersist(err error) {
+	if err != nil {
+		panic(fmt.Sprintf("raft %s: persisting state: %v", n.id, err))
+	}
 }
 
 // runApplier feeds committed entries to the state machine and answers the
