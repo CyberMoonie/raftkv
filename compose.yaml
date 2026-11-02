@@ -1,0 +1,42 @@
+# Three-node cluster: node1 starts it, node2 and node3 join through any
+# member. A fourth node can join later: docker compose --profile extra up -d
+#
+# Clients on the host use ports 6379-6382. Each node advertises its host
+# port, so MOVED redirects work from the host.
+
+x-node: &node
+  build: .
+  image: raftkv
+  restart: unless-stopped
+
+services:
+  node1:
+    <<: *node
+    command: [-id=node1, -raft-addr=node1:7001, -client-addr=127.0.0.1:6379, -client-listen=:6379, -data-dir=/data, -bootstrap]
+    ports: ["6379:6379"]
+    volumes: [node1:/data]
+
+  node2:
+    <<: *node
+    command: [-id=node2, -raft-addr=node2:7001, -client-addr=127.0.0.1:6380, -client-listen=:6380, -data-dir=/data, "-join=node1:6379,node3:6381"]
+    ports: ["6380:6380"]
+    volumes: [node2:/data]
+
+  node3:
+    <<: *node
+    command: [-id=node3, -raft-addr=node3:7001, -client-addr=127.0.0.1:6381, -client-listen=:6381, -data-dir=/data, "-join=node1:6379,node2:6380"]
+    ports: ["6381:6381"]
+    volumes: [node3:/data]
+
+  node4:
+    <<: *node
+    profiles: [extra]
+    command: [-id=node4, -raft-addr=node4:7001, -client-addr=127.0.0.1:6382, -client-listen=:6382, -data-dir=/data, "-join=node1:6379,node2:6380,node3:6381"]
+    ports: ["6382:6382"]
+    volumes: [node4:/data]
+
+volumes:
+  node1:
+  node2:
+  node3:
+  node4:
