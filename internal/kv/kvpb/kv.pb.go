@@ -76,6 +76,119 @@ func (x *Command) GetNowMs() int64 {
 	return 0
 }
 
+// Snapshot is the whole store, used to compact the Raft log.
+type Snapshot struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NowMs         int64                  `protobuf:"varint,1,opt,name=now_ms,json=nowMs,proto3" json:"now_ms,omitempty"`
+	Items         []*Item                `protobuf:"bytes,2,rep,name=items,proto3" json:"items,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Snapshot) Reset() {
+	*x = Snapshot{}
+	mi := &file_kv_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Snapshot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Snapshot) ProtoMessage() {}
+
+func (x *Snapshot) ProtoReflect() protoreflect.Message {
+	mi := &file_kv_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Snapshot.ProtoReflect.Descriptor instead.
+func (*Snapshot) Descriptor() ([]byte, []int) {
+	return file_kv_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *Snapshot) GetNowMs() int64 {
+	if x != nil {
+		return x.NowMs
+	}
+	return 0
+}
+
+func (x *Snapshot) GetItems() []*Item {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+type Item struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Value         []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	ExpireAtMs    int64                  `protobuf:"varint,3,opt,name=expire_at_ms,json=expireAtMs,proto3" json:"expire_at_ms,omitempty"` // 0 means no expiry
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Item) Reset() {
+	*x = Item{}
+	mi := &file_kv_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Item) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Item) ProtoMessage() {}
+
+func (x *Item) ProtoReflect() protoreflect.Message {
+	mi := &file_kv_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Item.ProtoReflect.Descriptor instead.
+func (*Item) Descriptor() ([]byte, []int) {
+	return file_kv_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *Item) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *Item) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *Item) GetExpireAtMs() int64 {
+	if x != nil {
+		return x.ExpireAtMs
+	}
+	return 0
+}
+
 var File_kv_proto protoreflect.FileDescriptor
 
 const file_kv_proto_rawDesc = "" +
@@ -83,7 +196,15 @@ const file_kv_proto_rawDesc = "" +
 	"\bkv.proto\x12\x02kv\"4\n" +
 	"\aCommand\x12\x12\n" +
 	"\x04args\x18\x01 \x03(\fR\x04args\x12\x15\n" +
-	"\x06now_ms\x18\x02 \x01(\x03R\x05nowMsB0Z.github.com/CyberMoonie/raftkv/internal/kv/kvpbb\x06proto3"
+	"\x06now_ms\x18\x02 \x01(\x03R\x05nowMs\"A\n" +
+	"\bSnapshot\x12\x15\n" +
+	"\x06now_ms\x18\x01 \x01(\x03R\x05nowMs\x12\x1e\n" +
+	"\x05items\x18\x02 \x03(\v2\b.kv.ItemR\x05items\"P\n" +
+	"\x04Item\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\x12 \n" +
+	"\fexpire_at_ms\x18\x03 \x01(\x03R\n" +
+	"expireAtMsB0Z.github.com/CyberMoonie/raftkv/internal/kv/kvpbb\x06proto3"
 
 var (
 	file_kv_proto_rawDescOnce sync.Once
@@ -97,16 +218,19 @@ func file_kv_proto_rawDescGZIP() []byte {
 	return file_kv_proto_rawDescData
 }
 
-var file_kv_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
+var file_kv_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_kv_proto_goTypes = []any{
-	(*Command)(nil), // 0: kv.Command
+	(*Command)(nil),  // 0: kv.Command
+	(*Snapshot)(nil), // 1: kv.Snapshot
+	(*Item)(nil),     // 2: kv.Item
 }
 var file_kv_proto_depIdxs = []int32{
-	0, // [0:0] is the sub-list for method output_type
-	0, // [0:0] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	2, // 0: kv.Snapshot.items:type_name -> kv.Item
+	1, // [1:1] is the sub-list for method output_type
+	1, // [1:1] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_kv_proto_init() }
@@ -120,7 +244,7 @@ func file_kv_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_kv_proto_rawDesc), len(file_kv_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   1,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

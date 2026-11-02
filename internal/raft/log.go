@@ -45,6 +45,13 @@ func (l *raftLog) append(entries ...*raftpb.Entry) {
 	l.entries = append(l.entries, entries...)
 }
 
+// compact discards every entry up to and including i, which becomes the new
+// sentinel. Its data is dropped; only the index and term are still needed.
+func (l *raftLog) compact(i uint64) {
+	sentinel := &raftpb.Entry{Index: i, Term: l.entry(i).Term}
+	l.entries = append([]*raftpb.Entry{sentinel}, l.entries[i-l.firstIndex()+1:]...)
+}
+
 // truncateFrom removes entry i and everything after it.
 func (l *raftLog) truncateFrom(i uint64) {
 	l.entries = l.entries[:i-l.firstIndex()]

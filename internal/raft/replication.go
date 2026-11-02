@@ -80,6 +80,12 @@ func (n *Node) replicate(m *raftpb.Member, term uint64) (more bool) {
 	}
 	next := n.nextIndex[m.Id]
 	prevIndex := next - 1
+	if prevIndex < n.log.firstIndex() {
+		// The entries m needs were compacted away; send the snapshot.
+		snap := n.snapshot
+		n.mu.Unlock()
+		return n.sendSnapshot(m, term, snap)
+	}
 	prevTerm, _ := n.log.term(prevIndex)
 	last := min(n.log.lastIndex(), prevIndex+maxBatch)
 	req := &raftpb.AppendEntriesRequest{
@@ -134,6 +140,32 @@ func (n *Node) replicate(m *raftpb.Member, term uint64) (more bool) {
 	return true
 }
 
+func (n *Node) sendSnapshot(m *raftpb.Member, term uint64, snap *raftpb.Snapshot) (more bool) {
+	req := &raftpb.InstallSnapshotRequest{Term: term, LeaderId: n.id, Snapshot: snap}
+	ctx, cancel := n.rpcContext()
+	defer cancel()
+	resp, err := n.cfg.Transport.InstallSnapshot(ctx, m.RaftAddr, req)
+	if err != nil {
+		return false
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if resp.Term > n.term {
+		n.becomeFollower(resp.Term)
+		return false
+	}
+	if n.role != Leader || n.term != term {
+		return false
+	}
+	if snap.LastIndex > n.matchIndex[m.Id] {
+		n.matchIndex[m.Id] = snap.LastIndex
+		n.advanceCommit()
+	}
+	n.nextIndex[m.Id] = max(n.nextIndex[m.Id], snap.LastIndex+1)
+	return n.nextIndex[m.Id] <= n.log.lastIndex()
+}
+
 // advanceCommit moves commitIndex to the highest entry stored on a majority.
 // Only entries from the current term are counted directly; earlier ones are
 // committed along with them (§5.4.2, Figure 8).
@@ -176,14 +208,23 @@ func (n *Node) HandleAppendEntries(req *raftpb.AppendEntriesRequest) *raftpb.App
 	n.leaderID = req.LeaderId
 	n.resetElectionTimer()
 
+	prevIndex, prevTerm, entries := req.PrevLogIndex, req.PrevLogTerm, req.Entries
+	if first := n.log.firstIndex(); prevIndex < first {
+		// Our snapshot already covers the start of the request. Those
+		// entries are committed, so they match the leader's; skip them.
+		skip := min(first-prevIndex, uint64(len(entries)))
+		entries = entries[skip:]
+		prevIndex, prevTerm = first, n.log.entries[0].Term
+	}
+
 	// Consistency check: our log must contain prevIndex with prevTerm.
-	if req.PrevLogIndex > n.log.lastIndex() {
+	if prevIndex > n.log.lastIndex() {
 		resp.ConflictIndex = n.log.lastIndex() + 1
 		return resp
 	}
-	if term, _ := n.log.term(req.PrevLogIndex); term != req.PrevLogTerm {
+	if term, _ := n.log.term(prevIndex); term != prevTerm {
 		resp.ConflictTerm = term
-		resp.ConflictIndex = n.log.firstIndexOfTerm(req.PrevLogIndex)
+		resp.ConflictIndex = n.log.firstIndexOfTerm(prevIndex)
 		return resp
 	}
 
@@ -191,7 +232,7 @@ func (n *Node) HandleAppendEntries(req *raftpb.AppendEntriesRequest) *raftpb.App
 	// conflicts, never just because the request ends earlier: an old,
 	// delayed request must not undo entries a newer one appended. Everything
 	// is on disk before we reply.
-	for i, e := range req.Entries {
+	for i, e := range entries {
 		if e.Index <= n.log.lastIndex() {
 			if term, _ := n.log.term(e.Index); term == e.Term {
 				continue
@@ -199,16 +240,55 @@ func (n *Node) HandleAppendEntries(req *raftpb.AppendEntriesRequest) *raftpb.App
 			n.log.truncateFrom(e.Index)
 			n.mustPersist(n.storage.truncateFrom(e.Index))
 		}
-		n.log.append(req.Entries[i:]...)
-		n.mustPersist(n.storage.appendEntries(req.Entries[i:]))
+		n.log.append(entries[i:]...)
+		n.mustPersist(n.storage.appendEntries(entries[i:]))
 		break
 	}
 
-	lastNew := req.PrevLogIndex + uint64(len(req.Entries))
+	lastNew := prevIndex + uint64(len(entries))
 	if req.LeaderCommit > n.commitIndex {
 		n.commitIndex = max(n.commitIndex, min(req.LeaderCommit, lastNew))
 		n.applyCond.Broadcast()
 	}
 	resp.Success = true
+	return resp
+}
+
+// HandleInstallSnapshot replaces the follower's state with the leader's
+// snapshot when the follower is too far behind for log entries (§7).
+func (n *Node) HandleInstallSnapshot(req *raftpb.InstallSnapshotRequest) *raftpb.InstallSnapshotResponse {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	resp := &raftpb.InstallSnapshotResponse{Term: n.term}
+	if req.Term < n.term || n.stopped {
+		return resp
+	}
+	if req.Term > n.term || n.role != Follower {
+		n.becomeFollower(req.Term)
+		resp.Term = n.term
+	}
+	n.leaderID = req.LeaderId
+	n.resetElectionTimer()
+
+	snap := req.Snapshot
+	if snap.LastIndex <= n.commitIndex {
+		return resp // we already have everything it covers
+	}
+
+	// Keep entries after the snapshot if our log agrees with it up to that
+	// point; otherwise the whole log is stale.
+	if term, ok := n.log.term(snap.LastIndex); ok && term == snap.LastTerm {
+		n.log.compact(snap.LastIndex)
+	} else {
+		n.log = newLog(snap.LastIndex, snap.LastTerm)
+	}
+	n.mustPersist(n.storage.saveSnapshot(snap))
+	n.mustPersist(n.storage.rewriteLog(n.log.slice(snap.LastIndex+1, n.log.lastIndex()+1)))
+	n.snapshot = snap
+	n.commitIndex = snap.LastIndex
+	n.pendingSnapshot = snap
+	n.applyCond.Broadcast()
+	n.logger.Info("installed snapshot from leader", "index", snap.LastIndex)
 	return resp
 }

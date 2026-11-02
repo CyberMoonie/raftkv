@@ -11,3 +11,15 @@ message Command {
   // replica evaluates expiry against this value instead of its own clock.
   int64 now_ms = 2;
 }
+
+// Snapshot is the whole store, used to compact the Raft log.
+message Snapshot {
+  int64 now_ms = 1;
+  repeated Item items = 2;
+}
+
+message Item {
+  string key = 1;
+  bytes value = 2;
+  int64 expire_at_ms = 3; // 0 means no expiry
+}

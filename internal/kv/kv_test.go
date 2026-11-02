@@ -144,3 +144,32 @@ func TestApplyDecodesEncodedCommand(t *testing.T) {
 	}
 	wantBulk(t, run(s, 0, "GET k"), "v")
 }
+
+func TestSnapshotRestore(t *testing.T) {
+	s := New()
+	run(s, 1_000, "SET a 1")
+	run(s, 1_000, "SET b 2 EX 60")
+	run(s, 1_000, "SET gone x PX 10")
+	run(s, 2_000, "INCR a")
+	data, err := s.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := New()
+	if err := r.Restore(data); err != nil {
+		t.Fatal(err)
+	}
+	wantBulk(t, run(r, 2_000, "GET a"), "2")
+	wantInt(t, run(r, 2_000, "TTL b"), 59)
+	wantInt(t, run(r, 2_000, "EXISTS gone"), 0)
+
+	// Restoring replaces the old state, and equal states give equal bytes.
+	run(r, 2_000, "SET extra 1")
+	r.Restore(data)
+	wantInt(t, run(r, 2_000, "EXISTS extra"), 0)
+	again, _ := r.Snapshot()
+	if string(again) != string(data) {
+		t.Fatal("snapshot of a restored store differs from the original")
+	}
+}

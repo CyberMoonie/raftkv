@@ -19,9 +19,13 @@ import (
 )
 
 // StateMachine is the application being replicated. Apply is called exactly
-// once for every committed command, in log order, on every node.
+// once for every committed command, in log order, on every node. Snapshot
+// serializes the current state and Restore replaces the state with a
+// snapshot; both are only called between Apply calls.
 type StateMachine interface {
 	Apply(index uint64, data []byte) any
+	Snapshot() ([]byte, error)
+	Restore(data []byte) error
 }
 
 type Config struct {
@@ -39,7 +43,10 @@ type Config struct {
 	// from a leader before it starts an election. Each wait is random in
 	// [ElectionTimeout, 2*ElectionTimeout) so nodes rarely time out together.
 	ElectionTimeout time.Duration
-	Logger          *slog.Logger
+	// SnapshotThreshold is how many applied entries the log may hold before
+	// the node snapshots the state machine and discards them.
+	SnapshotThreshold uint64
+	Logger            *slog.Logger
 }
 
 type Role int
@@ -112,6 +119,13 @@ type Node struct {
 	// waiters are Propose calls waiting for their entry to be applied.
 	waiters map[uint64]waiter
 
+	// snapshot is the latest one, kept to send to followers that are behind.
+	snapshot *raftpb.Snapshot
+	// pendingSnapshot came from the leader and waits for the applier to
+	// load it into the state machine.
+	pendingSnapshot   *raftpb.Snapshot
+	snapshotRequested bool
+
 	stopped bool
 	ctx     context.Context // cancelled by Stop, aborts in-flight RPCs
 	cancel  context.CancelFunc
@@ -145,17 +159,30 @@ func New(cfg Config) (*Node, error) {
 	if cfg.ElectionTimeout == 0 {
 		cfg.ElectionTimeout = 500 * time.Millisecond
 	}
+	if cfg.SnapshotThreshold == 0 {
+		cfg.SnapshotThreshold = 1024
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
 
-	st, hs, entries, err := openStorage(cfg.DataDir)
+	st, saved, err := openStorage(cfg.DataDir)
 	if err != nil {
 		return nil, err
 	}
-	if len(entries) > 0 && entries[0].Index != 1 {
-		st.close()
-		return nil, fmt.Errorf("raft: log starts at index %d, want 1", entries[0].Index)
+	snap := saved.snapshot
+	entries, changed := entriesAfter(snap, saved.entries)
+	if changed {
+		if err := st.rewriteLog(entries); err != nil {
+			st.close()
+			return nil, err
+		}
+	}
+	if snap.LastIndex > 0 {
+		if err := cfg.StateMachine.Restore(snap.Data); err != nil {
+			st.close()
+			return nil, fmt.Errorf("raft: restoring snapshot: %w", err)
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -164,9 +191,12 @@ func New(cfg Config) (*Node, error) {
 		id:          cfg.ID,
 		logger:      cfg.Logger.With("node", cfg.ID),
 		storage:     st,
-		term:        hs.Term,
-		votedFor:    hs.VotedFor,
-		log:         newLog(0, 0),
+		term:        saved.hardState.Term,
+		votedFor:    saved.hardState.VotedFor,
+		log:         newLog(snap.LastIndex, snap.LastTerm),
+		commitIndex: snap.LastIndex,
+		lastApplied: snap.LastIndex,
+		snapshot:    snap,
 		members:     cfg.Members,
 		nextIndex:   make(map[string]uint64),
 		matchIndex:  make(map[string]uint64),
@@ -178,6 +208,25 @@ func New(cfg Config) (*Node, error) {
 	n.applyCond = sync.NewCond(&n.mu)
 	n.log.append(entries...)
 	return n, nil
+}
+
+// entriesAfter returns the saved entries that continue snap, and whether
+// that differs from what the log file holds. A crash between saving a
+// snapshot and rewriting the log can leave entries the snapshot already
+// covers, or, after InstallSnapshot, entries that do not continue it at all.
+func entriesAfter(snap *raftpb.Snapshot, entries []*raftpb.Entry) ([]*raftpb.Entry, bool) {
+	if len(entries) == 0 || entries[0].Index == snap.LastIndex+1 {
+		return entries, false
+	}
+	first := entries[0].Index
+	if first > snap.LastIndex+1 {
+		return nil, true
+	}
+	i := snap.LastIndex - first // position of the snapshot's last entry
+	if i >= uint64(len(entries)) || entries[i].Term != snap.LastTerm {
+		return nil, true
+	}
+	return entries[i+1:], true
 }
 
 // Start runs the election timer and the applier in the background.
@@ -253,22 +302,34 @@ type Status struct {
 	CommitIndex uint64
 	LastApplied uint64
 	LastIndex   uint64
-	Members     []*raftpb.Member
+	// SnapshotIndex is the last entry covered by the latest snapshot.
+	SnapshotIndex uint64
+	Members       []*raftpb.Member
 }
 
 func (n *Node) Status() Status {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return Status{
-		ID:          n.id,
-		Role:        n.role,
-		Term:        n.term,
-		LeaderID:    n.leaderID,
-		CommitIndex: n.commitIndex,
-		LastApplied: n.lastApplied,
-		LastIndex:   n.log.lastIndex(),
-		Members:     n.members,
+		ID:            n.id,
+		Role:          n.role,
+		Term:          n.term,
+		LeaderID:      n.leaderID,
+		CommitIndex:   n.commitIndex,
+		LastApplied:   n.lastApplied,
+		LastIndex:     n.log.lastIndex(),
+		SnapshotIndex: n.log.firstIndex(),
+		Members:       n.members,
 	}
+}
+
+// RequestSnapshot asks the node to snapshot and compact its log as soon as
+// it has applied anything new, without waiting for SnapshotThreshold.
+func (n *Node) RequestSnapshot() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.snapshotRequested = true
+	n.applyCond.Broadcast()
 }
 
 // runTicker starts an election whenever the election timeout passes without
@@ -436,17 +497,33 @@ func (n *Node) mustPersist(err error) {
 }
 
 // runApplier feeds committed entries to the state machine and answers the
-// Propose calls waiting for them.
+// Propose calls waiting for them. It is the only goroutine that touches the
+// state machine, so it also loads and takes snapshots.
 func (n *Node) runApplier() {
 	defer n.wg.Done()
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	for {
-		for !n.stopped && n.lastApplied >= n.commitIndex {
+		for !n.stopped && n.pendingSnapshot == nil && n.lastApplied >= n.commitIndex && !n.snapshotDue() {
 			n.applyCond.Wait()
 		}
 		if n.stopped {
 			return
+		}
+		if snap := n.pendingSnapshot; snap != nil {
+			n.pendingSnapshot = nil
+			n.mu.Unlock()
+			err := n.cfg.StateMachine.Restore(snap.Data)
+			n.mu.Lock()
+			if err != nil {
+				panic(fmt.Sprintf("raft %s: restoring snapshot: %v", n.id, err))
+			}
+			n.lastApplied = snap.LastIndex
+			continue
+		}
+		if n.snapshotDue() {
+			n.takeSnapshot()
+			continue
 		}
 
 		entries := n.log.slice(n.lastApplied+1, n.commitIndex+1)
@@ -475,6 +552,38 @@ func (n *Node) runApplier() {
 			}
 		}
 	}
+}
+
+func (n *Node) snapshotDue() bool {
+	if n.lastApplied <= n.log.firstIndex() {
+		return false
+	}
+	return n.snapshotRequested || n.lastApplied-n.log.firstIndex() >= n.cfg.SnapshotThreshold
+}
+
+// takeSnapshot saves the state machine as of lastApplied and drops the log
+// entries it covers (§7). The state machine is serialized without the lock
+// held, so the node keeps replicating meanwhile.
+func (n *Node) takeSnapshot() {
+	n.snapshotRequested = false
+	index := n.lastApplied
+	term, _ := n.log.term(index)
+	n.mu.Unlock()
+	data, err := n.cfg.StateMachine.Snapshot()
+	n.mu.Lock()
+	if err != nil {
+		panic(fmt.Sprintf("raft %s: taking snapshot: %v", n.id, err))
+	}
+	if index <= n.log.firstIndex() {
+		return // a snapshot from the leader got further meanwhile
+	}
+
+	snap := &raftpb.Snapshot{LastIndex: index, LastTerm: term, Data: data}
+	n.mustPersist(n.storage.saveSnapshot(snap))
+	n.log.compact(index)
+	n.mustPersist(n.storage.rewriteLog(n.log.slice(index+1, n.log.lastIndex()+1)))
+	n.snapshot = snap
+	n.logger.Info("took snapshot", "index", index, "bytes", len(data))
 }
 
 func (n *Node) isQuorum(votes int) bool {

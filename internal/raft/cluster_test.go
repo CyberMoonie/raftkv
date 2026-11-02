@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -64,6 +65,10 @@ func (t memTransport) AppendEntries(_ context.Context, addr string, req *raftpb.
 	return call(t, addr, req, (*Node).HandleAppendEntries)
 }
 
+func (t memTransport) InstallSnapshot(_ context.Context, addr string, req *raftpb.InstallSnapshotRequest) (*raftpb.InstallSnapshotResponse, error) {
+	return call(t, addr, req, (*Node).HandleInstallSnapshot)
+}
+
 // testFSM records the commands applied to it.
 type testFSM struct {
 	mu      sync.Mutex
@@ -77,6 +82,18 @@ func (f *testFSM) Apply(_ uint64, data []byte) any {
 	return len(f.applied)
 }
 
+func (f *testFSM) Snapshot() ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return json.Marshal(f.applied)
+}
+
+func (f *testFSM) Restore(data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return json.Unmarshal(data, &f.applied)
+}
+
 func (f *testFSM) values() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -85,6 +102,7 @@ func (f *testFSM) values() []string {
 
 type cluster struct {
 	t       *testing.T
+	cfg     Config // template for every node's config
 	net     *network
 	members []*raftpb.Member
 	dirs    []string
@@ -94,8 +112,15 @@ type cluster struct {
 
 func newCluster(t *testing.T, size int) *cluster {
 	t.Helper()
+	return newClusterWith(t, size, Config{})
+}
+
+// newClusterWith starts a cluster whose nodes use cfg's tuning fields.
+func newClusterWith(t *testing.T, size int, cfg Config) *cluster {
+	t.Helper()
 	c := &cluster{
 		t:     t,
+		cfg:   cfg,
 		net:   &network{nodes: make(map[string]*Node), down: make(map[string]bool)},
 		nodes: make([]*Node, size),
 		fsms:  make([]*testFSM, size),
@@ -120,16 +145,16 @@ func (c *cluster) start(i int) {
 	c.t.Helper()
 	m := c.members[i]
 	fsm := &testFSM{}
-	n, err := New(Config{
-		ID:                m.Id,
-		DataDir:           c.dirs[i],
-		Members:           c.members,
-		Transport:         memTransport{net: c.net, from: m.RaftAddr},
-		StateMachine:      fsm,
-		HeartbeatInterval: 20 * time.Millisecond,
-		ElectionTimeout:   150 * time.Millisecond,
-		Logger:            slog.New(slog.DiscardHandler),
-	})
+	cfg := c.cfg
+	cfg.ID = m.Id
+	cfg.DataDir = c.dirs[i]
+	cfg.Members = c.members
+	cfg.Transport = memTransport{net: c.net, from: m.RaftAddr}
+	cfg.StateMachine = fsm
+	cfg.HeartbeatInterval = 20 * time.Millisecond
+	cfg.ElectionTimeout = 150 * time.Millisecond
+	cfg.Logger = slog.New(slog.DiscardHandler)
+	n, err := New(cfg)
 	if err != nil {
 		c.t.Fatal(err)
 	}

@@ -16,8 +16,9 @@ import (
 
 // storage keeps a node's persistent state in a directory:
 //
-//	state  current term and vote, replaced atomically on every change
-//	log    the log as append-only records
+//	state     current term and vote, replaced atomically on every change
+//	snapshot  the latest snapshot, replaced atomically
+//	log       the entries after the snapshot, as append-only records
 //
 // Each log record is a 4-byte length, a 4-byte CRC-32C of the payload and
 // the Entry protobuf. A crash in the middle of an append leaves a partial
@@ -32,31 +33,50 @@ type storage struct {
 	size       int64
 }
 
+// savedState is what openStorage found on disk.
+type savedState struct {
+	hardState *raftpb.HardState
+	snapshot  *raftpb.Snapshot
+	entries   []*raftpb.Entry
+}
+
 const recordHeaderSize = 8
 
 var crcTable = crc32.MakeTable(crc32.Castagnoli)
 
 // openStorage opens or creates the files in dir and returns what was saved.
-func openStorage(dir string) (*storage, *raftpb.HardState, []*raftpb.Entry, error) {
+func openStorage(dir string) (*storage, *savedState, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	hs := &raftpb.HardState{}
-	if err := readProto(filepath.Join(dir, "state"), hs); err != nil {
-		return nil, nil, nil, err
+	saved := &savedState{hardState: &raftpb.HardState{}, snapshot: &raftpb.Snapshot{}}
+	if err := readProto(filepath.Join(dir, "state"), saved.hardState); err != nil {
+		return nil, nil, err
+	}
+	if err := readProto(filepath.Join(dir, "snapshot"), saved.snapshot); err != nil {
+		return nil, nil, err
 	}
 
-	f, err := os.OpenFile(filepath.Join(dir, "log"), os.O_RDWR|os.O_CREATE, 0o644)
-	if err != nil {
-		return nil, nil, nil, err
+	s := &storage{dir: dir}
+	if err := s.openLog(); err != nil {
+		return nil, nil, err
 	}
-	s := &storage{dir: dir, log: f}
 	entries, err := s.readLog()
 	if err != nil {
-		f.Close()
-		return nil, nil, nil, err
+		s.close()
+		return nil, nil, err
 	}
-	return s, hs, entries, nil
+	saved.entries = entries
+	return s, saved, nil
+}
+
+func (s *storage) openLog() error {
+	f, err := os.OpenFile(filepath.Join(s.dir, "log"), os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		return err
+	}
+	s.log = f
+	return nil
 }
 
 func (s *storage) readLog() ([]*raftpb.Entry, error) {
@@ -115,18 +135,29 @@ func decodeRecord(b []byte) (*raftpb.Entry, int64, error) {
 	return e, total, nil
 }
 
-func encodeRecord(buf []byte, e *raftpb.Entry) ([]byte, error) {
-	payload, err := proto.Marshal(e)
-	if err != nil {
-		return nil, err
+// encodeRecords appends the records for entries to buf and returns where
+// each one starts, relative to base.
+func encodeRecords(buf []byte, base int64, entries []*raftpb.Entry) ([]byte, []int64, error) {
+	offsets := make([]int64, len(entries))
+	for i, e := range entries {
+		payload, err := proto.Marshal(e)
+		if err != nil {
+			return nil, nil, err
+		}
+		offsets[i] = base + int64(len(buf))
+		buf = binary.BigEndian.AppendUint32(buf, uint32(len(payload)))
+		buf = binary.BigEndian.AppendUint32(buf, crc32.Checksum(payload, crcTable))
+		buf = append(buf, payload...)
 	}
-	buf = binary.BigEndian.AppendUint32(buf, uint32(len(payload)))
-	buf = binary.BigEndian.AppendUint32(buf, crc32.Checksum(payload, crcTable))
-	return append(buf, payload...), nil
+	return buf, offsets, nil
 }
 
 func (s *storage) saveHardState(hs *raftpb.HardState) error {
-	return writeProtoAtomic(filepath.Join(s.dir, "state"), hs)
+	return writeFileAtomic(filepath.Join(s.dir, "state"), hs)
+}
+
+func (s *storage) saveSnapshot(snap *raftpb.Snapshot) error {
+	return writeFileAtomic(filepath.Join(s.dir, "snapshot"), snap)
 }
 
 // appendEntries writes entries to the end of the log and syncs the file.
@@ -134,23 +165,18 @@ func (s *storage) appendEntries(entries []*raftpb.Entry) error {
 	if len(entries) == 0 {
 		return nil
 	}
-	if len(s.offsets) == 0 {
-		s.firstIndex = entries[0].Index
-	}
-	var buf []byte
-	offsets := make([]int64, len(entries))
-	for i, e := range entries {
-		offsets[i] = s.size + int64(len(buf))
-		var err error
-		if buf, err = encodeRecord(buf, e); err != nil {
-			return err
-		}
+	buf, offsets, err := encodeRecords(nil, s.size, entries)
+	if err != nil {
+		return err
 	}
 	if _, err := s.log.WriteAt(buf, s.size); err != nil {
 		return err
 	}
 	if err := s.log.Sync(); err != nil {
 		return err
+	}
+	if len(s.offsets) == 0 {
+		s.firstIndex = entries[0].Index
 	}
 	s.offsets = append(s.offsets, offsets...)
 	s.size += int64(len(buf))
@@ -174,6 +200,34 @@ func (s *storage) truncateFrom(index uint64) error {
 	return nil
 }
 
+// rewriteLog replaces the whole log file with entries. It runs after a
+// snapshot, to drop the prefix the snapshot now covers. The new file is
+// built aside and renamed into place, so a crash leaves the old file or
+// the new one.
+func (s *storage) rewriteLog(entries []*raftpb.Entry) error {
+	buf, offsets, err := encodeRecords(nil, 0, entries)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(s.dir, "log")
+	if err := writeAtomic(path, buf); err != nil {
+		return err
+	}
+	if err := s.log.Close(); err != nil {
+		return err
+	}
+	if err := s.openLog(); err != nil {
+		return err
+	}
+	s.offsets = offsets
+	s.size = int64(len(buf))
+	s.firstIndex = 0
+	if len(entries) > 0 {
+		s.firstIndex = entries[0].Index
+	}
+	return nil
+}
+
 func (s *storage) close() error { return s.log.Close() }
 
 // readProto reads a protobuf file; a missing file leaves m empty.
@@ -188,14 +242,18 @@ func readProto(path string, m proto.Message) error {
 	return proto.Unmarshal(data, m)
 }
 
-// writeProtoAtomic replaces path so that after a crash it holds either the
-// old or the new content, never a mix: write a temporary file, sync it,
-// rename it over the old one and sync the directory that records the rename.
-func writeProtoAtomic(path string, m proto.Message) error {
+func writeFileAtomic(path string, m proto.Message) error {
 	data, err := proto.Marshal(m)
 	if err != nil {
 		return err
 	}
+	return writeAtomic(path, data)
+}
+
+// writeAtomic replaces path so that after a crash it holds either the old or
+// the new content, never a mix: write a temporary file, sync it, rename it
+// over the old one and sync the directory that records the rename.
+func writeAtomic(path string, data []byte) error {
 	tmp := path + ".tmp"
 	f, err := os.Create(tmp)
 	if err != nil {

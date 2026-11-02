@@ -15,9 +15,11 @@ import (
 type Transport interface {
 	RequestVote(ctx context.Context, addr string, req *raftpb.RequestVoteRequest) (*raftpb.RequestVoteResponse, error)
 	AppendEntries(ctx context.Context, addr string, req *raftpb.AppendEntriesRequest) (*raftpb.AppendEntriesResponse, error)
+	InstallSnapshot(ctx context.Context, addr string, req *raftpb.InstallSnapshotRequest) (*raftpb.InstallSnapshotResponse, error)
 }
 
-// maxMessageSize raises gRPC's 4 MiB default so large batches fit.
+// maxMessageSize raises gRPC's 4 MiB default so large batches and snapshots
+// fit.
 const maxMessageSize = 64 << 20
 
 // GRPCTransport is a Transport over gRPC. Connections are created on first
@@ -70,6 +72,14 @@ func (t *GRPCTransport) AppendEntries(ctx context.Context, addr string, req *raf
 	return c.AppendEntries(ctx, req)
 }
 
+func (t *GRPCTransport) InstallSnapshot(ctx context.Context, addr string, req *raftpb.InstallSnapshotRequest) (*raftpb.InstallSnapshotResponse, error) {
+	c, err := t.client(addr)
+	if err != nil {
+		return nil, err
+	}
+	return c.InstallSnapshot(ctx, req)
+}
+
 // Close closes every connection.
 func (t *GRPCTransport) Close() error {
 	t.mu.Lock()
@@ -101,4 +111,8 @@ func (h grpcHandler) RequestVote(_ context.Context, req *raftpb.RequestVoteReque
 
 func (h grpcHandler) AppendEntries(_ context.Context, req *raftpb.AppendEntriesRequest) (*raftpb.AppendEntriesResponse, error) {
 	return h.n.HandleAppendEntries(req), nil
+}
+
+func (h grpcHandler) InstallSnapshot(_ context.Context, req *raftpb.InstallSnapshotRequest) (*raftpb.InstallSnapshotResponse, error) {
+	return h.n.HandleInstallSnapshot(req), nil
 }

@@ -6,6 +6,7 @@ package kv
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"path"
 	"slices"
@@ -282,4 +283,32 @@ func (s *Store) dbsize(_ [][]byte) resp.Value {
 		}
 	}
 	return resp.Integer(n)
+}
+
+// Snapshot serializes the whole store for log compaction. Keys are sorted
+// and expired items left out, so replicas with the same state produce the
+// same bytes.
+func (s *Store) Snapshot() ([]byte, error) {
+	snap := &kvpb.Snapshot{NowMs: s.now}
+	for _, key := range slices.Sorted(maps.Keys(s.items)) {
+		it := s.items[key]
+		if !s.expired(it) {
+			snap.Items = append(snap.Items, &kvpb.Item{Key: key, Value: it.value, ExpireAtMs: it.expireAt})
+		}
+	}
+	return proto.MarshalOptions{Deterministic: true}.Marshal(snap)
+}
+
+// Restore replaces the store with the contents of a snapshot.
+func (s *Store) Restore(data []byte) error {
+	var snap kvpb.Snapshot
+	if err := proto.Unmarshal(data, &snap); err != nil {
+		return err
+	}
+	s.items = make(map[string]item, len(snap.Items))
+	for _, it := range snap.Items {
+		s.items[it.Key] = item{value: it.Value, expireAt: it.ExpireAtMs}
+	}
+	s.now = snap.NowMs
+	return nil
 }
