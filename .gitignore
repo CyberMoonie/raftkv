@@ -1,0 +1,5 @@
+# Build output
+/raftkv
+
+# Node data written by local runs
+/data/
