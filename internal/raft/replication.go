@@ -78,13 +78,16 @@ func (n *Node) replicate(m *raftpb.Member, term uint64) (more bool) {
 		n.mu.Unlock()
 		return false
 	}
+	// Any answer to this request in our term shows m still follows us, which
+	// confirms the reads registered up to now (read.go).
+	readSeq := n.readSeq
 	next := n.nextIndex[m.Id]
 	prevIndex := next - 1
 	if prevIndex < n.log.firstIndex() {
 		// The entries m needs were compacted away; send the snapshot.
 		snap := n.snapshot
 		n.mu.Unlock()
-		return n.sendSnapshot(m, term, snap)
+		return n.sendSnapshot(m, term, snap, readSeq)
 	}
 	prevTerm, _ := n.log.term(prevIndex)
 	last := min(n.log.lastIndex(), prevIndex+maxBatch)
@@ -114,6 +117,7 @@ func (n *Node) replicate(m *raftpb.Member, term uint64) (more bool) {
 	if n.role != Leader || n.term != term {
 		return false
 	}
+	n.ackRead(m.Id, readSeq)
 
 	if resp.Success {
 		match := prevIndex + uint64(len(req.Entries))
@@ -140,7 +144,7 @@ func (n *Node) replicate(m *raftpb.Member, term uint64) (more bool) {
 	return true
 }
 
-func (n *Node) sendSnapshot(m *raftpb.Member, term uint64, snap *raftpb.Snapshot) (more bool) {
+func (n *Node) sendSnapshot(m *raftpb.Member, term uint64, snap *raftpb.Snapshot, readSeq uint64) (more bool) {
 	req := &raftpb.InstallSnapshotRequest{Term: term, LeaderId: n.id, Snapshot: snap}
 	ctx, cancel := n.rpcContext()
 	defer cancel()
@@ -158,6 +162,7 @@ func (n *Node) sendSnapshot(m *raftpb.Member, term uint64, snap *raftpb.Snapshot
 	if n.role != Leader || n.term != term {
 		return false
 	}
+	n.ackRead(m.Id, readSeq)
 	if snap.LastIndex > n.matchIndex[m.Id] {
 		n.matchIndex[m.Id] = snap.LastIndex
 		n.advanceCommit()

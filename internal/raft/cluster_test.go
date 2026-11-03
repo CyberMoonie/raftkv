@@ -82,6 +82,11 @@ func (f *testFSM) Apply(_ uint64, data []byte) any {
 	return len(f.applied)
 }
 
+// Query returns everything applied so far.
+func (f *testFSM) Query(_ []byte) any {
+	return f.values()
+}
+
 func (f *testFSM) Snapshot() ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

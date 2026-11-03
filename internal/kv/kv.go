@@ -26,6 +26,9 @@ type Store struct {
 	// now is the logical clock in Unix milliseconds, taken from the commands
 	// themselves (see Execute).
 	now int64
+	// frozen is set while a query runs: expired keys are hidden but not
+	// deleted, so a read never changes one replica's state.
+	frozen bool
 }
 
 type item struct {
@@ -41,22 +44,29 @@ type command struct {
 	// arity counts the command name too. Positive means exactly that many
 	// arguments, negative means at least -arity (the Redis convention).
 	arity int
-	run   func(s *Store, args [][]byte) resp.Value
+	// readOnly commands can be served by Query, outside the log.
+	readOnly bool
+	run      func(s *Store, args [][]byte) resp.Value
 }
 
 var commands = map[string]command{
-	"GET":     {2, (*Store).get},
-	"SET":     {-3, (*Store).set},
-	"DEL":     {-2, (*Store).del},
-	"EXISTS":  {-2, (*Store).exists},
-	"INCR":    {2, func(s *Store, args [][]byte) resp.Value { return s.incrBy(args[1], 1) }},
-	"DECR":    {2, func(s *Store, args [][]byte) resp.Value { return s.incrBy(args[1], -1) }},
-	"INCRBY":  {3, (*Store).incrByCmd},
-	"EXPIRE":  {3, (*Store).expire},
-	"TTL":     {2, (*Store).ttl},
-	"PERSIST": {2, (*Store).persist},
-	"KEYS":    {2, (*Store).keys},
-	"DBSIZE":  {1, (*Store).dbsize},
+	"GET":     {arity: 2, readOnly: true, run: (*Store).get},
+	"SET":     {arity: -3, run: (*Store).set},
+	"DEL":     {arity: -2, run: (*Store).del},
+	"EXISTS":  {arity: -2, readOnly: true, run: (*Store).exists},
+	"INCR":    {arity: 2, run: func(s *Store, args [][]byte) resp.Value { return s.incrBy(args[1], 1) }},
+	"DECR":    {arity: 2, run: func(s *Store, args [][]byte) resp.Value { return s.incrBy(args[1], -1) }},
+	"INCRBY":  {arity: 3, run: (*Store).incrByCmd},
+	"EXPIRE":  {arity: 3, run: (*Store).expire},
+	"TTL":     {arity: 2, readOnly: true, run: (*Store).ttl},
+	"PERSIST": {arity: 2, run: (*Store).persist},
+	"KEYS":    {arity: 2, readOnly: true, run: (*Store).keys},
+	"DBSIZE":  {arity: 1, readOnly: true, run: (*Store).dbsize},
+}
+
+// IsReadOnly reports whether a valid command only reads data.
+func IsReadOnly(args [][]byte) bool {
+	return len(args) > 0 && commands[strings.ToUpper(string(args[0]))].readOnly
 }
 
 // Validate checks a command before it is proposed to Raft, so that unknown
@@ -104,11 +114,40 @@ func (s *Store) Execute(args [][]byte, nowMs int64) resp.Value {
 	return commands[strings.ToUpper(string(args[0]))].run(s, args)
 }
 
-// lookup returns a live item, deleting it first if it has expired.
+// Query answers a read-only command encoded with Encode without changing the
+// store. It is the method Raft calls for reads that skip the log (ReadIndex).
+func (s *Store) Query(data []byte) any {
+	var cmd kvpb.Command
+	if err := proto.Unmarshal(data, &cmd); err != nil {
+		return resp.Errorf("ERR corrupt query: %v", err)
+	}
+	return s.read(cmd.Args, cmd.NowMs)
+}
+
+// read runs a read-only command as if at time nowMs. Neither the clock nor
+// expired keys are touched: this replica must stay identical to the others,
+// which never see the query.
+func (s *Store) read(args [][]byte, nowMs int64) resp.Value {
+	if err := Validate(args); err != nil {
+		return resp.Error(err.Error())
+	}
+	if !IsReadOnly(args) {
+		return resp.Errorf("ERR '%s' is not a read-only command", args[0])
+	}
+	clock := s.now
+	s.now, s.frozen = max(s.now, nowMs), true
+	defer func() { s.now, s.frozen = clock, false }()
+	return commands[strings.ToUpper(string(args[0]))].run(s, args)
+}
+
+// lookup returns a live item, deleting it first if it has expired (except
+// during a query).
 func (s *Store) lookup(key string) (item, bool) {
 	it, ok := s.items[key]
 	if ok && s.expired(it) {
-		delete(s.items, key)
+		if !s.frozen {
+			delete(s.items, key)
+		}
 		return item{}, false
 	}
 	return it, ok

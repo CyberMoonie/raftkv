@@ -1,8 +1,9 @@
 // Package server accepts Redis clients and runs their commands through Raft.
 //
-// Every key-value command, reads included, goes through the log, so a reply
-// reflects every write committed before it (linearizability). Followers do
-// not serve commands; they redirect the client to the leader.
+// Writes go through the Raft log. Reads skip it with ReadIndex: the leader
+// confirms it is still the leader and answers from its state machine. Either
+// way a reply reflects every write acknowledged before it (linearizability).
+// Followers do not serve commands; they redirect the client to the leader.
 package server
 
 import (
@@ -137,7 +138,12 @@ func (s *Server) execute(args [][]byte) (reply resp.Value, quit bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
-	v, err := s.node.Propose(ctx, data)
+	var v any
+	if kv.IsReadOnly(args) {
+		v, err = s.node.Read(ctx, data)
+	} else {
+		v, err = s.node.Propose(ctx, data)
+	}
 	if err != nil {
 		return errorReply(err), false
 	}

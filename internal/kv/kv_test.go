@@ -7,14 +7,18 @@ import (
 	"github.com/CyberMoonie/raftkv/internal/resp"
 )
 
-// run executes a space-separated command at time now (Unix ms).
-func run(s *Store, now int64, cmd string) resp.Value {
+func toArgs(cmd string) [][]byte {
 	fields := strings.Fields(cmd)
 	args := make([][]byte, len(fields))
 	for i, f := range fields {
 		args[i] = []byte(f)
 	}
-	return s.Execute(args, now)
+	return args
+}
+
+// run executes a space-separated command at time now (Unix ms).
+func run(s *Store, now int64, cmd string) resp.Value {
+	return s.Execute(toArgs(cmd), now)
 }
 
 func wantInt(t *testing.T, v resp.Value, want int64) {
@@ -171,5 +175,29 @@ func TestSnapshotRestore(t *testing.T) {
 	again, _ := r.Snapshot()
 	if string(again) != string(data) {
 		t.Fatal("snapshot of a restored store differs from the original")
+	}
+}
+
+func TestQueryDoesNotChangeTheStore(t *testing.T) {
+	s := New()
+	run(s, 1_000, "SET k v PX 100")
+	run(s, 1_000, "SET live v")
+	data, _ := Encode([][]byte{[]byte("GET"), []byte("k")}, 5_000)
+
+	wantNull(t, s.Query(data).(resp.Value))
+	// The expired key is hidden but still stored, and the clock did not
+	// move, exactly like on replicas that never saw the query.
+	if len(s.items) != 2 || s.now != 1_000 {
+		t.Fatalf("query changed the store: %d items, clock %d", len(s.items), s.now)
+	}
+	wantBulk(t, s.read([][]byte{[]byte("GET"), []byte("live")}, 5_000), "v")
+	wantError(t, s.read([][]byte{[]byte("SET"), []byte("k"), []byte("v")}, 0), "ERR 'SET' is not a read-only command")
+}
+
+func TestIsReadOnly(t *testing.T) {
+	for cmd, want := range map[string]bool{"GET k": true, "ttl k": true, "KEYS *": true, "SET k v": false, "INCR k": false, "NOPE": false} {
+		if got := IsReadOnly(toArgs(cmd)); got != want {
+			t.Errorf("IsReadOnly(%q) = %v, want %v", cmd, got, want)
+		}
 	}
 }

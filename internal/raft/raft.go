@@ -24,11 +24,13 @@ import (
 )
 
 // StateMachine is the application being replicated. Apply is called exactly
-// once for every committed command, in log order, on every node. Snapshot
-// serializes the current state and Restore replaces the state with a
-// snapshot; both are only called between Apply calls.
+// once for every committed command, in log order, on every node. Query
+// answers a read-only query without changing the state. Snapshot serializes
+// the current state and Restore replaces the state with a snapshot. Calls
+// never overlap.
 type StateMachine interface {
 	Apply(index uint64, data []byte) any
+	Query(query []byte) any
 	Snapshot() ([]byte, error)
 	Restore(data []byte) error
 }
@@ -138,6 +140,13 @@ type Node struct {
 
 	// waiters are Propose calls waiting for their entry to be applied.
 	waiters map[uint64]waiter
+
+	// ReadIndex state (read.go). readSeq numbers reads; readAcks holds, per
+	// follower, the readSeq of the latest heartbeat it answered.
+	readSeq      uint64
+	readAcks     map[string]uint64
+	pendingReads []*readRequest // waiting for leadership confirmation
+	readyReads   []*readRequest // confirmed, waiting for the applier
 
 	// snapshot is the latest one, kept to send to followers that are behind.
 	snapshot *raftpb.Snapshot
@@ -543,6 +552,7 @@ func (n *Node) becomeFollower(term uint64) {
 	}
 	if n.role == Leader {
 		n.stopReplicators()
+		n.failPendingReads()
 		n.leaderID = ""
 	}
 	if n.role != Follower {
@@ -560,6 +570,7 @@ func (n *Node) becomeLeader() {
 
 	n.nextIndex = make(map[string]uint64)
 	n.matchIndex = make(map[string]uint64)
+	n.readAcks = make(map[string]uint64)
 	n.syncReplicators()
 	// A leader may only count replicas for entries of its own term (§5.4.2),
 	// so entries left over from earlier terms are committed only once it
@@ -602,7 +613,8 @@ func (n *Node) runApplier() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	for {
-		for !n.stopped && n.pendingSnapshot == nil && n.lastApplied >= n.commitIndex && !n.snapshotDue() {
+		for !n.stopped && n.pendingSnapshot == nil && n.lastApplied >= n.commitIndex &&
+			!n.snapshotDue() && !n.hasRunnableReads() {
 			n.applyCond.Wait()
 		}
 		if n.stopped {
@@ -617,6 +629,14 @@ func (n *Node) runApplier() {
 				panic(fmt.Sprintf("raft %s: restoring snapshot: %v", n.id, err))
 			}
 			n.lastApplied = snap.LastIndex
+			continue
+		}
+		if reads := n.runnableReads(); len(reads) > 0 {
+			n.mu.Unlock()
+			for _, r := range reads {
+				r.ch <- result{value: n.cfg.StateMachine.Query(r.query)}
+			}
+			n.mu.Lock()
 			continue
 		}
 		if n.snapshotDue() {

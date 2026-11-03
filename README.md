@@ -12,7 +12,7 @@ Use it with `redis-cli` or any Redis client. Data survives as long as a majority
 - **Persistence**: term, vote and log are fsynced before replying; torn writes are detected with CRC-32C
 - **Log compaction**: snapshots, plus InstallSnapshot for followers that fall behind
 - **Membership changes**: add or remove one node at a time, while the cluster keeps running
-- **Linearizable**: every command, reads included, goes through the log
+- **Linearizable**: writes go through the log; reads use ReadIndex (one heartbeat round, no disk write)
 
 ## Run with Docker
 
