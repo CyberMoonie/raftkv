@@ -233,6 +233,7 @@ a { color: var(--cyan); }
 
 .map-wrap { overflow-x: auto; }
 #map { width: 100%; height: auto; display: block; user-select: none; }
+#links, #core, #packets { pointer-events: none; }
 
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
 .legend i { font-style: normal; font-weight: 700; }

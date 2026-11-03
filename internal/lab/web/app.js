@@ -53,6 +53,15 @@ const S = {
 const $ = sel => document.querySelector(sel);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// setHTML replaces an element's content only when it changed. The page
+// redraws several times a second, and replacing a button between the press
+// and the release of a click would swallow the click.
+const setHTML = (el, html) => {
+  if (el._html !== html) {
+    el._html = html;
+    el.innerHTML = html;
+  }
+};
 const svg = (tag, attrs = {}) => {
   const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
   for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
@@ -100,8 +109,13 @@ async function act(type, extra = {}) {
 
 // ── live connection ───────────────────────────────────────
 
+// Browsers allow only six connections per server, and every open lab tab
+// holds one for its event stream; hidden tabs let go of theirs.
+let es = null;
+
 function connect() {
-  const es = new EventSource("/api/events");
+  if (es) return;
+  es = new EventSource("/api/events");
   es.addEventListener("state", e => {
     const first = !S.state;
     S.state = JSON.parse(e.data);
@@ -116,8 +130,18 @@ function connect() {
     S.packets = [];
     S.sideB.clear();
   });
-  es.onerror = () => { $("#hint").innerHTML = '<span class="warn">Lost connection to the lab. Retrying…</span>'; };
+  es.onerror = () => {
+    setHTML($("#hint"), '<span class="warn">⚠ The lab server is not answering.</span> If you stopped it, start it again with <code>go run ./cmd/raftkv-lab</code>; this page reconnects by itself.');
+  };
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    if (es) { es.close(); es = null; }
+  } else {
+    connect();
+  }
+});
 
 function onFirstState() {
   const n = nodes()[0];
@@ -154,7 +178,7 @@ function renderVitals() {
     ["HEARTBEAT", secs(st.heartbeatMs), "cyan"],
     ["ELECTION T/O", `${secs(st.electionMs)}–${secs(2 * st.electionMs)}`, "cyan"],
   ];
-  $("#vitals").innerHTML = items.map(([k, v, c]) => `<div><dt>${k}</dt><dd class="${c}">${esc(v)}</dd></div>`).join("");
+  setHTML($("#vitals"), items.map(([k, v, c]) => `<div><dt>${k}</dt><dd class="${c}">${esc(v)}</dd></div>`).join(""));
 }
 
 // reachableFrom counts the running members on n's side of the network.
@@ -180,7 +204,7 @@ function renderHint() {
   } else {
     h = `<b>NO LEADER.</b> Every follower is waiting for a heartbeat. Watch the draining bars: when one runs out, that node asks for (pre-)votes.`;
   }
-  $("#hint").innerHTML = h;
+  setHTML($("#hint"), h);
 }
 
 // ── cluster map ───────────────────────────────────────────
@@ -223,18 +247,31 @@ function renderMap() {
     <text class="core-text" x="${W / 2}" y="${H / 2 + 26}">TERM ${L ? L.term : "—"}</text>
     <text class="core-text" x="${W / 2}" y="${H / 2 + 44}">COMMIT ${L ? "#" + L.commit : "—"}</text>`;
 
-  const g = $("#nodes");
-  g.replaceChildren();
-  for (const n of list) g.append(nodeCard(n));
+  // Each node keeps one <g> for good: only the drawing inside it changes,
+  // and a transparent hit area on top takes the clicks.
+  const layer = $("#nodes");
+  const ids = new Set(list.map(n => n.id));
+  for (const g of [...layer.children]) if (!ids.has(g.dataset.id)) g.remove();
+  for (const n of list) {
+    let g = layer.querySelector(`[data-id="${n.id}"]`);
+    if (!g) {
+      g = svg("g", { "data-id": n.id, tabindex: 0, role: "button" });
+      g.append(svg("g"), svg("rect", { class: "hit", fill: "transparent" }));
+      g.addEventListener("click", () => select(n.id));
+      g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") select(n.id); });
+      layer.append(g);
+    }
+    drawNode(g, n);
+  }
 }
 
-function nodeCard(n) {
+function drawNode(g, n) {
   const p = S.pos[n.id], x = p.x - CARD_W / 2, y = p.y - CARD_H / 2;
   const role = ROLE[n.role] || ROLE.offline;
-  const cls = ["node", n.role, n.member ? "" : "nonmember", S.selected === n.id ? "selected" : ""].join(" ");
-  const g = svg("g", { class: cls, tabindex: 0, role: "button", "aria-label": `${n.id}, ${n.role}` });
-  g.addEventListener("click", () => select(n.id));
-  g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") select(n.id); });
+  g.setAttribute("class", ["node", n.role, n.member ? "" : "nonmember", S.selected === n.id ? "selected" : ""].join(" "));
+  g.setAttribute("aria-label", `${n.id}, ${n.role}`);
+  const hit = g.lastChild;
+  for (const [k, v] of Object.entries({ x: x - 6, y: y - 22, width: CARD_W + 12, height: CARD_H + 28 })) hit.setAttribute(k, v);
 
   let flag = "";
   if (!n.member && n.up) flag = `<text class="flag" x="${p.x}" y="${y - 7}" fill="#8a8794">NOT A MEMBER</text>`;
@@ -255,7 +292,7 @@ function nodeCard(n) {
   }
 
   const v = s => `<tspan class="v">${esc(s)}</tspan>`;
-  g.innerHTML = `
+  setHTML(g.firstChild, `
     ${S.selected === n.id ? `<rect class="sel" x="${x - 5}" y="${y - 5}" width="${CARD_W + 10}" height="${CARD_H + 10}"/>` : ""}
     <rect class="card" x="${x}" y="${y}" width="${CARD_W}" height="${CARD_H}"/>
     <text class="id" x="${x + 10}" y="${y + 20}">${n.id}</text>
@@ -263,8 +300,7 @@ function nodeCard(n) {
     ${n.up ? `<text class="line" x="${x + 10}" y="${y + 39}">term ${v(n.term)}  vote ${v(n.votedFor || "—")}</text>
     <text class="line" x="${x + 10}" y="${y + 55}">last ${v("#" + n.last)}  commit ${v("#" + n.commit)}</text>` :
     `<text class="line" x="${x + 10}" y="${y + 47}">crashed</text>`}
-    ${bottom}${flag}`;
-  return g;
+    ${bottom}${flag}`);
 }
 
 function addPacket(m) {
@@ -384,7 +420,7 @@ function renderLogGrid() {
   }
   html += "</tbody></table>";
   html += `<div class="note">Solid cell = committed (on a majority), dashed = not yet. ▓ = compacted into a snapshot (every ${S.state.snapshotThreshold} entries). Hover a cell to see its command.</div>`;
-  $("#loggrid").innerHTML = html;
+  setHTML($("#loggrid"), html);
 }
 
 // ── inspector ─────────────────────────────────────────────
@@ -461,18 +497,20 @@ function renderInspector() {
     html += "</tbody></table></div>";
   }
 
-  html += `<div class="ins-actions">
+  // The buttons live in their own container, which only changes when the
+  // available actions do, so they are never replaced under the pointer.
+  const actions = `
     ${n.up ? `<button class="btn danger small" data-node-act="crash">✖ CRASH</button>` : `<button class="btn go small" data-node-act="restart">↻ RESTART</button>`}
     <button class="btn danger small" data-node-act="isolate">${n.group ? "RECONNECT" : "⚡ ISOLATE"}</button>
     ${n.up ? `<button class="btn small" data-node-act="snapshot">▓ SNAPSHOT NOW</button>` : ""}
     ${n.member ? `<button class="btn danger small" data-node-act="remove">− REMOVE FROM CLUSTER</button>` : ""}
-    <button class="btn small" data-node-act="console">› USE IN CONSOLE</button>
-  </div>`;
+    <button class="btn small" data-node-act="console">› USE IN CONSOLE</button>`;
 
-  const box = $("#inspector");
-  const scrolls = [...box.querySelectorAll(".table-wrap")].map(t => t.scrollTop);
-  box.innerHTML = html;
-  box.querySelectorAll(".table-wrap").forEach((t, i) => { t.scrollTop = scrolls[i] || 0; });
+  const body = $("#insp-body");
+  const scrolls = [...body.querySelectorAll(".table-wrap")].map(t => t.scrollTop);
+  setHTML(body, html);
+  body.querySelectorAll(".table-wrap").forEach((t, i) => { t.scrollTop = scrolls[i] || 0; });
+  setHTML($("#insp-actions"), actions);
 }
 
 $("#inspector").addEventListener("click", e => {
@@ -572,7 +610,7 @@ function renderControls() {
   }
   $("#latency-v").textContent = $("#latency").value + " ms";
   $("#drop-v").textContent = $("#drop").value + " %";
-  $("#sides").innerHTML = nodes().map(n => `<button type="button" data-side="${n.id}" class="${S.sideB.has(n.id) ? "b" : ""}">${n.id}<small>side ${S.sideB.has(n.id) ? "B" : "A"}</small></button>`).join("");
+  setHTML($("#sides"), nodes().map(n => `<button type="button" data-side="${n.id}" class="${S.sideB.has(n.id) ? "b" : ""}">${n.id}<small>side ${S.sideB.has(n.id) ? "B" : "A"}</small></button>`).join(""));
   renderCliSelect();
 }
 
