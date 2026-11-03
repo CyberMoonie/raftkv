@@ -122,7 +122,8 @@ type Node struct {
 	commitIndex      uint64
 	lastApplied      uint64
 	electionDeadline time.Time
-	lastContact      time.Time // last message from a current leader
+	electionTimeout  time.Duration // the random timeout behind the deadline
+	lastContact      time.Time     // last message from a current leader
 	// campaign numbers vote rounds. Any role change starts a new number, so
 	// late answers to an old round are ignored.
 	campaign uint64
@@ -361,6 +362,7 @@ type Status struct {
 	ID          string
 	Role        Role
 	Term        uint64
+	VotedFor    string
 	LeaderID    string
 	CommitIndex uint64
 	LastApplied uint64
@@ -368,22 +370,62 @@ type Status struct {
 	// SnapshotIndex is the last entry covered by the latest snapshot.
 	SnapshotIndex uint64
 	Members       []*raftpb.Member
+	// ElectionDeadline is when a follower or candidate starts an election
+	// unless it hears from a leader; ElectionTimeout is the random wait that
+	// led to it.
+	ElectionDeadline time.Time
+	ElectionTimeout  time.Duration
+	// Progress is the leader's view of each follower's log, nil on others.
+	Progress []Progress
+}
+
+// Progress is how far the leader has replicated its log to one follower.
+type Progress struct {
+	ID    string
+	Match uint64 // highest entry known to be stored on the follower
+	Next  uint64 // next entry to send
 }
 
 func (n *Node) Status() Status {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return Status{
-		ID:            n.id,
-		Role:          n.role,
-		Term:          n.term,
-		LeaderID:      n.leaderID,
-		CommitIndex:   n.commitIndex,
-		LastApplied:   n.lastApplied,
-		LastIndex:     n.log.lastIndex(),
-		SnapshotIndex: n.log.firstIndex(),
-		Members:       n.members,
+	st := Status{
+		ID:               n.id,
+		Role:             n.role,
+		Term:             n.term,
+		VotedFor:         n.votedFor,
+		LeaderID:         n.leaderID,
+		CommitIndex:      n.commitIndex,
+		LastApplied:      n.lastApplied,
+		LastIndex:        n.log.lastIndex(),
+		SnapshotIndex:    n.log.firstIndex(),
+		Members:          n.members,
+		ElectionDeadline: n.electionDeadline,
+		ElectionTimeout:  n.electionTimeout,
 	}
+	if n.role == Leader {
+		for _, m := range n.members {
+			if m.Id != n.id {
+				st.Progress = append(st.Progress, Progress{ID: m.Id, Match: n.matchIndex[m.Id], Next: n.nextIndex[m.Id]})
+			}
+		}
+	}
+	return st
+}
+
+// LogTail returns copies of up to count of the newest entries in the log.
+func (n *Node) LogTail(count int) []*raftpb.Entry {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	from := n.log.firstIndex() + 1
+	if last := n.log.lastIndex(); last+1-from > uint64(count) {
+		from = last + 1 - uint64(count)
+	}
+	entries := n.log.slice(from, n.log.lastIndex()+1)
+	for i, e := range entries {
+		entries[i] = proto.CloneOf(e)
+	}
+	return entries
 }
 
 // RequestSnapshot asks the node to snapshot and compact its log as soon as
@@ -422,8 +464,8 @@ func (n *Node) runTicker() {
 }
 
 func (n *Node) resetElectionTimer() {
-	timeout := n.cfg.ElectionTimeout + rand.N(n.cfg.ElectionTimeout)
-	n.electionDeadline = time.Now().Add(timeout)
+	n.electionTimeout = n.cfg.ElectionTimeout + rand.N(n.cfg.ElectionTimeout)
+	n.electionDeadline = time.Now().Add(n.electionTimeout)
 }
 
 // startPreVote asks the other members whether they would vote for us in the

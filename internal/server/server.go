@@ -100,7 +100,11 @@ func (s *Server) handle(conn net.Conn) {
 			}
 			return
 		}
-		reply, quit := s.execute(args)
+		quit := strings.EqualFold(string(args[0]), "QUIT")
+		reply := resp.OK()
+		if !quit {
+			reply = s.Execute(args)
+		}
 		w.WriteValue(reply)
 		// Flush once per pipelined batch rather than once per command.
 		if quit || r.Buffered() == 0 {
@@ -111,30 +115,29 @@ func (s *Server) handle(conn net.Conn) {
 	}
 }
 
-// execute runs one command and reports whether the client asked to quit.
-func (s *Server) execute(args [][]byte) (reply resp.Value, quit bool) {
+// Execute runs one command and returns its reply, as if a client had sent
+// it over a connection.
+func (s *Server) Execute(args [][]byte) resp.Value {
 	switch strings.ToUpper(string(args[0])) {
 	case "PING":
 		if len(args) > 1 {
-			return resp.Bulk(args[1]), false
+			return resp.Bulk(args[1])
 		}
-		return resp.Simple("PONG"), false
-	case "QUIT":
-		return resp.OK(), true
+		return resp.Simple("PONG")
 	case "COMMAND":
 		// redis-cli asks for command docs on start; an empty list is enough.
-		return resp.Array(), false
+		return resp.Array()
 	case "RAFT":
-		return s.raftCommand(args), false
+		return s.raftCommand(args)
 	}
 
 	if err := kv.Validate(args); err != nil {
-		return resp.Error(err.Error()), false
+		return resp.Error(err.Error())
 	}
 	// Only the leader proposes, so this is the leader's clock (see kv.Encode).
 	data, err := kv.Encode(args, time.Now().UnixMilli())
 	if err != nil {
-		return resp.Errorf("ERR %v", err), false
+		return resp.Errorf("ERR %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
@@ -145,9 +148,9 @@ func (s *Server) execute(args [][]byte) (reply resp.Value, quit bool) {
 		v, err = s.node.Propose(ctx, data)
 	}
 	if err != nil {
-		return errorReply(err), false
+		return errorReply(err)
 	}
-	return v.(resp.Value), false
+	return v.(resp.Value)
 }
 
 const raftUsage = "ERR usage: RAFT INFO | RAFT ADD <id> <raft-addr> <client-addr> | RAFT REMOVE <id> | RAFT SNAPSHOT"
