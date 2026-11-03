@@ -14,6 +14,15 @@ Use it with `redis-cli` or any Redis client. Data survives as long as a majority
 - **Membership changes**: add or remove one node at a time, while the cluster keeps running
 - **Linearizable**: writes go through the log; reads use ReadIndex (one heartbeat round, no disk write)
 
+## Raft Lab
+
+An interactive dashboard that runs a 5-node cluster on a simulated network and shows every message, election and commit as it happens. Crash nodes, split the network, add packet loss, run Redis commands, and follow lessons that explain Raft and Redis from zero.
+
+```sh
+go run ./cmd/raftkv-lab                # http://localhost:8080, Redis on ports 7379-7383
+docker compose --profile lab up lab    # same, in Docker
+```
+
 ## Run with Docker
 
 ```sh
@@ -49,7 +58,7 @@ Clusters run over an in-memory network that can cut nodes off, so the tests cove
 
 ## Built with
 
-Go, gRPC, Protocol Buffers, Docker
+Go, gRPC, Protocol Buffers, Docker, Porcupine
 
 ## License
 
