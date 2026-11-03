@@ -8,7 +8,7 @@ Use it with `redis-cli` or any Redis client. Data survives as long as a majority
 
 ## Features
 
-- **Leader election and log replication**: randomized timeouts, election restriction, fast conflict backtracking
+- **Leader election and log replication**: randomized timeouts, Pre-Vote, election restriction, fast conflict backtracking
 - **Persistence**: term, vote and log are fsynced before replying; torn writes are detected with CRC-32C
 - **Log compaction**: snapshots, plus InstallSnapshot for followers that fall behind
 - **Membership changes**: add or remove one node at a time, while the cluster keeps running

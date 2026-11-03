@@ -54,7 +54,10 @@ type Config struct {
 	// SnapshotThreshold is how many applied entries the log may hold before
 	// the node snapshots the state machine and discards them.
 	SnapshotThreshold uint64
-	Logger            *slog.Logger
+	// DisablePreVote makes nodes start elections directly, as in the
+	// original paper. Only useful to see what Pre-Vote prevents.
+	DisablePreVote bool
+	Logger         *slog.Logger
 }
 
 type Role int
@@ -118,6 +121,9 @@ type Node struct {
 	lastApplied      uint64
 	electionDeadline time.Time
 	lastContact      time.Time // last message from a current leader
+	// campaign numbers vote rounds. Any role change starts a new number, so
+	// late answers to an old round are ignored.
+	campaign uint64
 
 	// members is the latest configuration in the log; configIndex is its
 	// entry, or the snapshot's last index if it came from the snapshot.
@@ -396,7 +402,11 @@ func (n *Node) runTicker() {
 		// Only members campaign: a node that was removed, or is waiting to
 		// be added, stays quiet.
 		if n.role != Leader && time.Now().After(n.electionDeadline) && n.member(n.id) != nil {
-			n.startElection()
+			if n.cfg.DisablePreVote {
+				n.startElection()
+			} else {
+				n.startPreVote()
+			}
 		}
 		n.mu.Unlock()
 	}
@@ -405,6 +415,23 @@ func (n *Node) runTicker() {
 func (n *Node) resetElectionTimer() {
 	timeout := n.cfg.ElectionTimeout + rand.N(n.cfg.ElectionTimeout)
 	n.electionDeadline = time.Now().Add(timeout)
+}
+
+// startPreVote asks the other members whether they would vote for us in the
+// next term, without raising our own term (dissertation §9.6). A node cut off
+// from the cluster keeps failing here instead of raising its term again and
+// again, so when it reconnects it cannot force a healthy leader to step down.
+func (n *Node) startPreVote() {
+	n.resetElectionTimer()
+	n.logger.Info("starting pre-vote", "term", n.term+1)
+	req := &raftpb.RequestVoteRequest{
+		Term:         n.term + 1,
+		CandidateId:  n.id,
+		LastLogIndex: n.log.lastIndex(),
+		LastLogTerm:  n.log.lastTerm(),
+		PreVote:      true,
+	}
+	n.requestVotes(req, n.startElection)
 }
 
 // startElection turns this node into a candidate for a new term and asks
@@ -418,16 +445,23 @@ func (n *Node) startElection() {
 	n.resetElectionTimer()
 	n.logger.Info("starting election", "term", n.term)
 
-	term := n.term
 	req := &raftpb.RequestVoteRequest{
-		Term:         term,
+		Term:         n.term,
 		CandidateId:  n.id,
 		LastLogIndex: n.log.lastIndex(),
 		LastLogTerm:  n.log.lastTerm(),
 	}
+	n.requestVotes(req, n.becomeLeader)
+}
+
+// requestVotes sends req to every other member and calls won, with the lock
+// held, once a majority including ourselves has granted it.
+func (n *Node) requestVotes(req *raftpb.RequestVoteRequest, won func()) {
+	n.campaign++
+	campaign := n.campaign
 	votes := 1 // our own
 	if n.isQuorum(votes) {
-		n.becomeLeader()
+		won()
 		return
 	}
 	for _, m := range n.members {
@@ -449,12 +483,12 @@ func (n *Node) startElection() {
 				n.becomeFollower(resp.Term)
 				return
 			}
-			if n.role != Candidate || n.term != term || !resp.VoteGranted {
+			if n.campaign != campaign || !resp.VoteGranted {
 				return
 			}
 			votes++
 			if n.isQuorum(votes) {
-				n.becomeLeader()
+				won()
 			}
 		}()
 	}
@@ -475,15 +509,20 @@ func (n *Node) HandleRequestVote(req *raftpb.RequestVoteRequest) *raftpb.Request
 	if n.role == Leader || (n.leaderID != "" && time.Since(n.lastContact) < n.cfg.ElectionTimeout) {
 		return &raftpb.RequestVoteResponse{Term: n.term}
 	}
-	if req.Term > n.term {
-		n.becomeFollower(req.Term)
-	}
 
 	// Election restriction (§5.4.1): only vote for a candidate whose log is at
 	// least as up-to-date as ours, so a leader always holds every committed
 	// entry.
 	upToDate := req.LastLogTerm > n.log.lastTerm() ||
 		(req.LastLogTerm == n.log.lastTerm() && req.LastLogIndex >= n.log.lastIndex())
+	if req.PreVote {
+		// Answer as a real election at req.Term would, but change nothing.
+		return &raftpb.RequestVoteResponse{Term: n.term, VoteGranted: req.Term > n.term && upToDate}
+	}
+
+	if req.Term > n.term {
+		n.becomeFollower(req.Term)
+	}
 	if (n.votedFor == "" || n.votedFor == req.CandidateId) && upToDate {
 		n.votedFor = req.CandidateId
 		n.persistHardState()
@@ -510,10 +549,12 @@ func (n *Node) becomeFollower(term uint64) {
 		n.logger.Info("became follower", "term", n.term)
 	}
 	n.role = Follower
+	n.campaign++
 }
 
 func (n *Node) becomeLeader() {
 	n.role = Leader
+	n.campaign++
 	n.leaderID = n.id
 	n.logger.Info("became leader", "term", n.term)
 

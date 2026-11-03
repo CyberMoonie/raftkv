@@ -42,6 +42,9 @@ message RequestVoteRequest {
   string candidate_id = 2;
   uint64 last_log_index = 3;
   uint64 last_log_term = 4;
+  // pre_vote asks "would you vote for me in this term?" without the
+  // candidate or the voter changing any state (dissertation §9.6).
+  bool pre_vote = 5;
 }
 
 message RequestVoteResponse {
