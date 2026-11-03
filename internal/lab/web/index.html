@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Raft Lab</title>
+<meta name="description" content="Watch a Raft-replicated Redis cluster elect leaders, replicate writes and survive crashes, live.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%2307070b'/%3E%3Cpath d='M3 3h10v10H3z' fill='none' stroke='%23FF003C' stroke-width='2'/%3E%3Ccircle cx='8' cy='8' r='2' fill='%2300F0FF'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="scanlines" aria-hidden="true"></div>
+
+<header class="top">
+  <div class="brand">
+    <pre class="logo" aria-label="RAFTKV LAB">█▀█ ▄▀█ █▀▀ ▀█▀ █▄▀ █ █ ╱╱ █   ▄▀█ █▄▄
+█▀▄ █▀█ █▀   █  █ █ ▀▄▀ ╱╱ █▄▄ █▀█ █▄█</pre>
+    <div class="tagline">consensus simulator · real Raft + Redis code, simulated network</div>
+  </div>
+  <dl class="vitals" id="vitals"></dl>
+  <div class="controls">
+    <div class="seg" role="group" aria-label="Speed">
+      <span class="seg-label">SPEED</span>
+      <button data-speed="slow">SLOW-MO</button>
+      <button data-speed="normal">NORMAL</button>
+      <button data-speed="fast">FAST</button>
+    </div>
+    <button class="toggle" id="prevote" aria-pressed="true">PRE-VOTE <b>ON</b></button>
+    <button class="btn danger" id="reset">⟲ RESET</button>
+  </div>
+</header>
+
+<div class="hint" id="hint">connecting to the lab…</div>
+
+<main class="grid">
+  <section class="panel learn" aria-labelledby="learn-title">
+    <h2 id="learn-title"><span>LEARN</span><small>12 lessons, zero to Raft</small></h2>
+    <ol class="lessons" id="lessons"></ol>
+  </section>
+
+  <section class="panel cluster" aria-labelledby="map-title">
+    <h2 id="map-title"><span>CLUSTER MAP</span><small>click a node to inspect it</small></h2>
+    <div class="legend" id="legend"></div>
+    <div class="map-wrap">
+      <svg id="map" viewBox="0 0 800 500" role="img" aria-label="Cluster map with nodes and messages">
+        <g id="links"></g>
+        <g id="core"></g>
+        <g id="nodes"></g>
+        <g id="packets"></g>
+      </svg>
+    </div>
+    <h3 class="sub"><span>REPLICATED LOGS</span><small>one row per node · columns are log positions · color = term</small></h3>
+    <div class="loggrid" id="loggrid"></div>
+  </section>
+
+  <section class="panel inspector" aria-labelledby="insp-title">
+    <h2 id="insp-title"><span>INSPECTOR</span><small id="insp-sub">select a node</small></h2>
+    <div id="inspector"></div>
+  </section>
+
+  <section class="panel console" aria-labelledby="cli-title">
+    <h2 id="cli-title"><span>REDIS-CLI</span><small id="cli-sub"></small></h2>
+    <div class="cli-target">
+      <label for="cli-node">connected to</label>
+      <select id="cli-node"></select>
+      <label class="check"><input type="checkbox" id="cli-follow" checked> -c follow redirects</label>
+    </div>
+    <div class="cli-out" id="cli-out" aria-live="polite"></div>
+    <form class="cli-in" id="cli-form" autocomplete="off">
+      <span class="prompt" id="cli-prompt">n1&gt;</span>
+      <input id="cli-input" spellcheck="false" placeholder="SET user:1 Neo" aria-label="Redis command">
+    </form>
+    <div class="chips" id="chips"></div>
+  </section>
+
+  <section class="panel chaos" aria-labelledby="chaos-title">
+    <h2 id="chaos-title"><span>NETWORK &amp; CHAOS</span><small>break things on purpose</small></h2>
+    <div class="slider">
+      <label for="latency">LATENCY <b id="latency-v"></b></label>
+      <input type="range" id="latency" min="0" max="1500" step="10">
+    </div>
+    <div class="slider">
+      <label for="drop">PACKET LOSS <b id="drop-v"></b></label>
+      <input type="range" id="drop" min="0" max="60" step="1">
+    </div>
+    <div class="btns">
+      <button class="btn danger" data-act="crash-leader">✖ CRASH LEADER</button>
+      <button class="btn danger" data-act="isolate-leader">⚡ ISOLATE LEADER</button>
+      <button class="btn danger" data-act="split">✂ SPLIT 2 | 3</button>
+      <button class="btn" data-act="heal">⟲ HEAL NETWORK</button>
+      <button class="btn" data-act="restart-all">↻ RESTART ALL</button>
+      <button class="btn" data-act="burst">⚙ BURST 40 WRITES</button>
+      <button class="btn" data-act="add">+ ADD NODE</button>
+    </div>
+    <div class="splitter">
+      <div class="splitter-title">CUSTOM SPLIT · click nodes to move them to side B</div>
+      <div class="sides" id="sides"></div>
+      <button class="btn small" id="apply-split">APPLY SPLIT</button>
+    </div>
+  </section>
+
+  <section class="panel feed" aria-labelledby="feed-title">
+    <h2 id="feed-title"><span>EVENT FEED</span><small>everything, explained</small></h2>
+    <div class="filters" id="filters"></div>
+    <ol class="feed-list" id="feed" aria-live="polite"></ol>
+  </section>
+</main>
+
+<footer class="foot">
+  <span>raftkv · Raft consensus + Redis protocol in Go</span>
+  <span>real redis-cli: <code id="foot-cli">redis-cli -c -p 7379</code></span>
+  <a href="https://github.com/CyberMoonie/raftkv" target="_blank" rel="noopener">github.com/CyberMoonie/raftkv</a>
+</footer>
+
+<div class="toast" id="toast" role="status"></div>
+<script src="app.js"></script>
+</body>
+</html>
