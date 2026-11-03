@@ -112,8 +112,12 @@ type cluster struct {
 	members []*raftpb.Member // every node ever started
 	initial int              // how many of them bootstrapped the cluster
 	dirs    []string
-	nodes   []*Node
 	fsms    []*testFSM
+	// newStateMachine replaces testFSM when set; fsms then stays empty.
+	newStateMachine func() StateMachine
+
+	mu    sync.Mutex // guards nodes for tests that restart nodes concurrently
+	nodes []*Node
 }
 
 func newCluster(t *testing.T, size int) *cluster {
@@ -124,11 +128,19 @@ func newCluster(t *testing.T, size int) *cluster {
 // newClusterWith starts a cluster whose nodes use cfg's tuning fields.
 func newClusterWith(t *testing.T, size int, cfg Config) *cluster {
 	t.Helper()
+	return newClusterOf(t, size, cfg, nil)
+}
+
+// newClusterOf starts a cluster whose nodes run state machines made by
+// newSM, or testFSMs if newSM is nil.
+func newClusterOf(t *testing.T, size int, cfg Config, newSM func() StateMachine) *cluster {
+	t.Helper()
 	c := &cluster{
-		t:       t,
-		cfg:     cfg,
-		net:     &network{nodes: make(map[string]*Node), down: make(map[string]bool)},
-		initial: size,
+		t:               t,
+		cfg:             cfg,
+		net:             &network{nodes: make(map[string]*Node), down: make(map[string]bool)},
+		initial:         size,
+		newStateMachine: newSM,
 	}
 	for range size {
 		c.newMember()
@@ -137,6 +149,8 @@ func newClusterWith(t *testing.T, size int, cfg Config) *cluster {
 		c.start(i)
 	}
 	t.Cleanup(func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
 		for _, n := range c.nodes {
 			if n != nil {
 				n.Stop()
@@ -167,7 +181,6 @@ func (c *cluster) addNode() int {
 func (c *cluster) start(i int) {
 	c.t.Helper()
 	m := c.members[i]
-	fsm := &testFSM{}
 	cfg := c.cfg
 	cfg.ID = m.Id
 	cfg.DataDir = c.dirs[i]
@@ -175,7 +188,12 @@ func (c *cluster) start(i int) {
 		cfg.Bootstrap = c.members[:c.initial]
 	}
 	cfg.Transport = memTransport{net: c.net, from: m.RaftAddr}
-	cfg.StateMachine = fsm
+	if c.newStateMachine != nil {
+		cfg.StateMachine = c.newStateMachine()
+	} else {
+		c.fsms[i] = &testFSM{}
+		cfg.StateMachine = c.fsms[i]
+	}
 	cfg.HeartbeatInterval = 20 * time.Millisecond
 	cfg.ElectionTimeout = 150 * time.Millisecond
 	cfg.Logger = slog.New(slog.DiscardHandler)
@@ -186,14 +204,22 @@ func (c *cluster) start(i int) {
 	c.net.mu.Lock()
 	c.net.nodes[m.RaftAddr] = n
 	c.net.mu.Unlock()
-	c.nodes[i], c.fsms[i] = n, fsm
+	c.mu.Lock()
+	c.nodes[i] = n
+	c.mu.Unlock()
 	n.Start()
+}
+
+func (c *cluster) node(i int) *Node {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.nodes[i]
 }
 
 // restart stops node i and starts it again from its data directory with an
 // empty state machine, like a process that crashed and came back.
 func (c *cluster) restart(i int) {
-	c.nodes[i].Stop()
+	c.node(i).Stop()
 	c.start(i)
 }
 

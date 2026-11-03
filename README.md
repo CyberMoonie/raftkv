@@ -45,7 +45,7 @@ Cluster: `RAFT INFO`, `RAFT ADD <id> <raft-addr> <client-addr>`, `RAFT REMOVE <i
 go test -race ./...
 ```
 
-Clusters run over an in-memory network that can cut nodes off, so the tests cover crashes, partitions, restarts and membership changes.
+Clusters run over an in-memory network that can cut nodes off, so the tests cover crashes, partitions, restarts and membership changes. A [Porcupine](https://github.com/anishathalye/porcupine) check runs concurrent clients through all of that and verifies the results are linearizable.
 
 ## Built with
 

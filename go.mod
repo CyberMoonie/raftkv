@@ -3,6 +3,7 @@ module github.com/CyberMoonie/raftkv
 go 1.27.3
 
 require (
+	github.com/anishathalye/porcupine v1.3.1
 	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
 )
